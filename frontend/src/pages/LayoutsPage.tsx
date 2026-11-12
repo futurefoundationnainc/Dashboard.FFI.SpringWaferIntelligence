@@ -5,7 +5,9 @@ import { buildLayoutFigure } from '../charts/waferFigures'
 import { DataTable, type Column } from '../components/DataTable'
 import { PlotlyChart } from '../components/PlotlyChart'
 import { fmt } from '../format'
-import { navigate } from '../router'
+import { hashParams, navigate, safeReturn } from '../router'
+import { LayoutHistory } from './LayoutHistory'
+import { readAuthor, rememberAuthor } from '../authorName'
 import type { ChartColors } from '../theme/chartColors'
 
 interface Props {
@@ -23,7 +25,7 @@ interface GangRow {
 
 const GANG_COLUMNS: Column<GangRow>[] = [
   { key: 'die', label: 'Die_Num', numeric: true, render: (r) => r.die },
-  { key: 'springs', label: 'Springs', numeric: true, render: (r) => r.springs },
+  { key: 'springs', label: 'Features', numeric: true, render: (r) => r.springs },
   { key: 'xmin', label: 'x min', numeric: true, render: (r) => fmt(r.xmin, 3) },
   { key: 'xmax', label: 'x max', numeric: true, render: (r) => fmt(r.xmax, 3) },
   { key: 'ymin', label: 'y min', numeric: true, render: (r) => fmt(r.ymin, 3) },
@@ -41,6 +43,12 @@ function formatSavedAt(value: string | null): string {
 }
 
 export function LayoutsPage({ colors }: Props) {
+  // Opened from a wafer map ("#/layouts?product=..&group=..&return=?sample=.."): prefill and offer the way back.
+  const [context] = useState(() => {
+    const params = hashParams()
+    return { product: params.get('product') ?? '', group: params.get('group') ?? '', returnTo: safeReturn(params.get('return')) }
+  })
+  const backToWafer = context.returnTo ? `${window.location.pathname}${context.returnTo}` : null
   const fileInput = useRef<HTMLInputElement>(null)
   const [layouts, setLayouts] = useState<LayoutItem[]>([])
   const [listError, setListError] = useState<string | null>(null)
@@ -48,10 +56,14 @@ export function LayoutsPage({ colors }: Props) {
   const [preview, setPreview] = useState<LayoutPreview | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [name, setName] = useState('')
-  const [products, setProducts] = useState('')
+  const [products, setProducts] = useState(context.product)
+  const [groups, setGroups] = useState(context.group)
+  const [author, setAuthor] = useState(readAuthor)
+  const [note, setNote] = useState('')
+  const [historyFor, setHistoryFor] = useState<string | null>(null)
   const [replace, setReplace] = useState(false)
   const [showLabels, setShowLabels] = useState(true)
-  const [busy, setBusy] = useState<'preview' | 'save' | 'delete' | 'list' | null>(null)
+  const [busy, setBusy] = useState<'preview' | 'save' | 'delete' | 'list' | 'unhide' | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saved, setSaved] = useState<LayoutItem | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
@@ -83,14 +95,14 @@ export function LayoutsPage({ colors }: Props) {
     try {
       const result = await api.previewLayout(picked)
       setPreview(result)
-      setName((current) => current.trim() || result.suggested_name)
+      setName((current) => current.trim() || context.product || result.suggested_name)
       setProducts((current) => current.trim() || result.suggested_name)
     } catch (err) {
       setPreviewError(errorText(err))
     } finally {
       setBusy(null)
     }
-  }, [])
+  }, [context.product])
 
   const existingNames = useMemo(() => new Set(layouts.map((l) => l.name.toLowerCase())), [layouts])
   const justSaved = saved !== null && saved.name.toLowerCase() === name.trim().toLowerCase()
@@ -101,7 +113,9 @@ export function LayoutsPage({ colors }: Props) {
     setBusy('save')
     setSaveError(null)
     try {
-      const item = await api.saveLayout({ name: name.trim(), products, replace, file })
+      const item = await api.saveLayout({
+        name: name.trim(), products, productGroups: groups, replace, file, author: author.trim(), note: note.trim(), action: 'upload',
+      })
       setSaved(item)
       setReplace(false)
       await refreshList()
@@ -110,21 +124,33 @@ export function LayoutsPage({ colors }: Props) {
     } finally {
       setBusy(null)
     }
-  }, [file, preview, name, products, replace, refreshList])
+  }, [file, preview, name, products, groups, replace, author, note, refreshList])
 
   const remove = useCallback(async (layoutName: string) => {
     setBusy('delete')
     try {
-      await api.deleteLayout(layoutName)
+      await api.setLayoutHidden(layoutName, true, author.trim())
       setConfirmDelete(null)
       if (saved?.name === layoutName) setSaved(null)
       await refreshList()
     } catch (err) {
-      setListError(`Could not delete ${layoutName}: ${errorText(err)}`)
+      setListError(`Could not hide ${layoutName}: ${errorText(err)}`)
     } finally {
       setBusy(null)
     }
-  }, [refreshList, saved])
+  }, [refreshList, saved, author])
+
+  const unhide = useCallback(async (layoutName: string) => {
+    setBusy('unhide')
+    try {
+      await api.setLayoutHidden(layoutName, false, author.trim())
+      await refreshList()
+    } catch (err) {
+      setListError(`Could not bring back ${layoutName}: ${errorText(err)}`)
+    } finally {
+      setBusy(null)
+    }
+  }, [refreshList, author])
 
   const figure = useMemo(() => (preview ? buildLayoutFigure(preview, colors, showLabels) : null), [preview, colors, showLabels])
   const gangRows = useMemo<GangRow[]>(() => {
@@ -135,6 +161,7 @@ export function LayoutsPage({ colors }: Props) {
   }, [preview])
 
   const summary = preview?.summary
+  const visibleCount = layouts.filter((l) => !l.hidden).length
   const canSave = Boolean(file && preview && name.trim() && busy === null && !justSaved && (!nameTaken || replace))
 
   return (
@@ -153,7 +180,7 @@ export function LayoutsPage({ colors }: Props) {
               onChange={(e) => void onFileChange(e.target.files?.[0] ?? null)}
             />
             <div className="file-name">
-              Spring layout: Die_Num, Spring_Num, X, Y (one row per spring). Die layout: Die #, X, Y (one row per die).
+              Feature layout: Die_Num, Spring_Num (the feature number), X, Y (one row per feature). Die layout: Die #, X, Y (one row per die).
               mm or µm (auto-detected); header descriptions in parentheses are fine.
             </div>
           </div>
@@ -169,7 +196,7 @@ export function LayoutsPage({ colors }: Props) {
               onChange={(e) => { setName(e.target.value); setSaveError(null) }}
             />
             {nameTaken && !replace && (
-              <div className="file-name" data-testid="name-taken">A layout with this name already exists. Tick Replace to overwrite it.</div>
+              <div className="file-name" data-testid="name-taken">A layout with this name already exists. Tick the box below to save this file as its next revision.</div>
             )}
           </div>
           <div className="field">
@@ -183,26 +210,67 @@ export function LayoutsPage({ colors }: Props) {
               disabled={busy !== null}
               onChange={(e) => { setProducts(e.target.value); setSaveError(null) }}
             />
-            <div className="file-name">These are the names the wafer map's Product selector and CloudPCS exports use. Designs that share a layout can all point here.</div>
+            <div className="file-name">The PRODUCT values of the CloudPCS exports. Designs that share a layout can all point here.</div>
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="layout-groups">Product groups (optional)</label>
+            <textarea
+              id="layout-groups"
+              className="input textarea"
+              rows={2}
+              value={groups}
+              placeholder="e.g. SEQUOIA I"
+              disabled={busy !== null}
+              onChange={(e) => { setGroups(e.target.value); setSaveError(null) }}
+            />
+            <div className="file-name">Used when no layout names the exact product: a wafer of any product in the group draws with this layout.</div>
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="layout-author">Your name</label>
+            <input
+              id="layout-author"
+              className="input"
+              type="text"
+              value={author}
+              placeholder="Shown in the revision history"
+              onChange={(e) => { setAuthor(e.target.value); rememberAuthor(e.target.value) }}
+            />
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="layout-note">Note (optional)</label>
+            <input
+              id="layout-note"
+              className="input"
+              type="text"
+              value={note}
+              placeholder="What this revision changes"
+              disabled={busy !== null}
+              onChange={(e) => setNote(e.target.value)}
+            />
           </div>
           <label className="checkbox-row">
             <input type="checkbox" checked={replace} disabled={busy !== null} onChange={(e) => setReplace(e.target.checked)} />
-            Replace existing layout with the same name
+            Save as a new revision of the existing layout
           </label>
           <div className="stack" style={{ gap: 8, marginTop: 10 }}>
             <button type="button" className="btn btn-accent btn-full" disabled={!canSave} onClick={() => void save()} data-testid="save-layout">
               {busy === 'save' ? 'Saving…' : 'Save layout'}
             </button>
-            <button type="button" className="btn btn-full" disabled={busy !== null} onClick={() => navigate('map')}>
-              Back to wafer map
-            </button>
+            {backToWafer ? (
+              <a className="btn btn-full" href={backToWafer} data-testid="back-to-wafer">Back to wafer map</a>
+            ) : (
+              <button type="button" className="btn btn-full" disabled={busy !== null} onClick={() => navigate('map')}>
+                Back to workbench
+              </button>
+            )}
           </div>
           <div className="sidebar-status" style={{ marginTop: 10 }}>
             <span className={`status-dot ${busy ? 'dot-warning' : preview ? 'dot-normal' : 'dot-nodata'}`} />
             <span>
               {busy === 'preview' && 'Parsing coordinate file…'}
               {busy === 'save' && 'Saving layout…'}
-              {busy === 'delete' && 'Deleting layout…'}
+              {busy === 'delete' && 'Hiding layout…'}
+              {busy === 'unhide' && 'Bringing layout back…'}
               {busy === 'list' && 'Loading layouts…'}
               {busy === null && (preview ? 'Preview ready. Check the map, then save.' : 'Choose a coordinate file to preview it.')}
             </span>
@@ -213,7 +281,7 @@ export function LayoutsPage({ colors }: Props) {
           <div className="micro-label">Preview options</div>
           <label className="checkbox-row">
             <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} />
-            Show gang outlines and labels
+            Show die outlines and labels
           </label>
           <div className="info-strip">
             The map centers the layout on the bounding-box midpoint of its coordinates and assumes notch down. Validate against physical fiducials before relying on positions.
@@ -222,6 +290,15 @@ export function LayoutsPage({ colors }: Props) {
       </aside>
 
       <main className={busy === 'preview' || busy === 'save' ? 'loading-dim' : undefined}>
+        {(context.product || context.group) && (
+          <div className="warning-banner" role="note" data-testid="editor-context">
+            <div>
+              A wafer of product <strong>{context.product || '—'}</strong>{context.group && <> (group <strong>{context.group}</strong>)</>} needs a layout.
+              Upload its coordinate file, or open an existing layout's History and add this product or group to it.
+              {backToWafer && <> <a href={backToWafer}>Back to the wafer map</a></>}
+            </div>
+          </div>
+        )}
         <div className="caveat-note">
           <strong>Layouts are the product coordinate references.</strong> A wafer map can only be drawn for a design whose layout is saved here. Upload the coordinate file, check the preview, then save it under a name and the design / product names it applies to.
         </div>
@@ -229,9 +306,13 @@ export function LayoutsPage({ colors }: Props) {
         {saved && (
           <div className="warning-banner" role="status" data-testid="saved-banner" style={{ borderLeftColor: 'var(--good)' }}>
             <div>
-              ✓ Saved layout <strong>{saved.name}</strong> ({fmt(saved.summary?.springs ?? 0)} springs, {fmt(saved.summary?.gangs ?? 0)} gangs) for {saved.products.join(', ')}.
-              It is now selectable in the wafer map's Product list.{' '}
-              <button type="button" className="btn btn-sm" onClick={() => navigate('map')}>Open wafer map</button>
+              ✓ Saved layout <strong>{saved.name}</strong> ({fmt(saved.summary?.springs ?? 0)} features, {fmt(saved.summary?.gangs ?? 0)} dies) for {saved.products.join(', ')}.
+              {saved.revision && saved.revision > 1 ? ` Revision ${saved.revision} is now current.` : ''}{' '}
+              {backToWafer ? (
+                <a className="btn btn-sm" href={backToWafer} data-testid="saved-back-to-wafer">Back to wafer map</a>
+              ) : (
+                <button type="button" className="btn btn-sm" onClick={() => navigate('map')}>Open workbench</button>
+              )}
             </div>
           </div>
         )}
@@ -246,7 +327,7 @@ export function LayoutsPage({ colors }: Props) {
                 <h2 className="card-title">{preview.filename}</h2>
               </div>
               <div className="card-actions">
-                <span className="inline-metric" data-testid="preview-kind"><span>Kind</span><strong>{summary.kind === 'die' ? 'Die map' : 'Spring map'}</strong></span>
+                <span className="inline-metric" data-testid="preview-kind"><span>Kind</span><strong>{summary.kind === 'die' ? 'Die map' : 'Feature map'}</strong></span>
                 {summary.kind === 'die' ? (
                   <>
                     <span className="inline-metric"><span>Dies</span><strong>{fmt(summary.gangs)}</strong></span>
@@ -257,10 +338,10 @@ export function LayoutsPage({ colors }: Props) {
                   </>
                 ) : (
                   <>
-                    <span className="inline-metric"><span>Springs</span><strong>{fmt(summary.springs)}</strong></span>
-                    <span className="inline-metric"><span>Gangs</span><strong>{fmt(summary.gangs)}</strong></span>
+                    <span className="inline-metric"><span>Features</span><strong>{fmt(summary.springs)}</strong></span>
+                    <span className="inline-metric"><span>Dies</span><strong>{fmt(summary.gangs)}</strong></span>
                     <span className="inline-metric">
-                      <span>Springs / gang</span>
+                      <span>Features / die</span>
                       <strong>{summary.springs_per_gang_min === summary.springs_per_gang_max ? fmt(summary.springs_per_gang_min) : `${fmt(summary.springs_per_gang_min)}–${fmt(summary.springs_per_gang_max)}`}</strong>
                     </span>
                   </>
@@ -278,21 +359,32 @@ export function LayoutsPage({ colors }: Props) {
             <div className="chart-note">
               {preview.caveat} Source extents: X {fmt(summary.x_min, 3)} to {fmt(summary.x_max, 3)} mm, Y {fmt(summary.y_min, 3)} to {fmt(summary.y_max, 3)} mm.
               {summary.kind === 'die'
-                ? ' Die layout (no spring level): each die is drawn as a cell at the grid pitch because the file carries no die dimensions; hover shows die and centered position.'
-                : ' Springs are drawn as 4 mm horizontal segments; hover shows die, spring and centered position.'}
+                ? ' Die layout (no feature level): each die is drawn as a cell at the grid pitch because the file carries no die dimensions; hover shows die and centered position.'
+                : ' Features are drawn as 4 mm horizontal segments; hover shows die, feature and centered position.'}
             </div>
             <details style={{ marginTop: 10 }}>
-              <summary className="micro-label" style={{ cursor: 'pointer' }}>{summary.kind === 'die' ? `Die positions (${fmt(gangRows.length)} dies)` : `Gang extents (${fmt(gangRows.length)} gangs)`}</summary>
+              <summary className="micro-label" style={{ cursor: 'pointer' }}>{summary.kind === 'die' ? `Die positions (${fmt(gangRows.length)} dies)` : `Die extents (${fmt(gangRows.length)} dies)`}</summary>
               <DataTable columns={GANG_COLUMNS} rows={gangRows} rowKey={(r) => String(r.die)} pageSize={200} testId="gang-extents" />
             </details>
           </section>
+        )}
+
+        {historyFor && (
+          <LayoutHistory
+            key={historyFor}
+            name={historyFor}
+            colors={colors}
+            author={author.trim()}
+            onChanged={refreshList}
+            onClose={() => setHistoryFor(null)}
+          />
         )}
 
         <section className="card">
           <div className="card-header">
             <div>
               <div className="micro-label">Saved layouts</div>
-              <h2 className="card-title">{fmt(layouts.length)} layout{layouts.length === 1 ? '' : 's'} available to the wafer map</h2>
+              <h2 className="card-title">{fmt(visibleCount)} layout{visibleCount === 1 ? '' : 's'} available to the wafer map</h2>
             </div>
             <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => void refreshList()}>Refresh</button>
           </div>
@@ -304,9 +396,11 @@ export function LayoutsPage({ colors }: Props) {
                   <th>Layout</th>
                   <th>Kind</th>
                   <th>Design / product names</th>
-                  <th className="col-num">Springs</th>
-                  <th className="col-num">Gangs</th>
-                  <th className="col-num">Springs / gang</th>
+                  <th>Groups</th>
+                  <th className="col-num">Rev</th>
+                  <th className="col-num">Features</th>
+                  <th className="col-num">Dies</th>
+                  <th className="col-num">Features / die</th>
                   <th>Center (mm)</th>
                   <th>File</th>
                   <th>Saved</th>
@@ -315,13 +409,19 @@ export function LayoutsPage({ colors }: Props) {
               </thead>
               <tbody>
                 {layouts.length === 0 && !listError && (
-                  <tr><td colSpan={10} className="cell-muted">No layouts yet. Upload a coordinate file to create the first one.</td></tr>
+                  <tr><td colSpan={12} className="cell-muted">No layouts yet. Upload a coordinate file to create the first one.</td></tr>
                 )}
                 {layouts.map((l) => (
-                  <tr key={l.name}>
-                    <td><strong>{l.name}</strong>{l.implicit && <span className="cell-muted"> (file only)</span>}</td>
-                    <td>{l.summary ? (l.summary.kind === 'die' ? 'Die map' : 'Spring map') : '—'}</td>
+                  <tr key={l.name} className={l.hidden ? 'row-hidden' : undefined}>
+                    <td>
+                      <strong>{l.name}</strong>
+                      {l.implicit && <span className="cell-muted"> (file only)</span>}
+                      {l.hidden && <span className="status-alarm"> (hidden)</span>}
+                    </td>
+                    <td>{l.summary ? (l.summary.kind === 'die' ? 'Die map' : 'Feature map') : '—'}</td>
                     <td>{l.products.join(', ')}</td>
+                    <td>{(l.product_groups ?? []).join(', ') || '—'}</td>
+                    <td className="col-num" title={l.author ? `by ${l.author}${l.note ? `: ${l.note}` : ''}` : l.note || undefined}>{l.revision ?? 1}</td>
                     <td className="col-num">{l.summary ? fmt(l.summary.springs) : '—'}</td>
                     <td className="col-num">{l.summary ? fmt(l.summary.gangs) : '—'}</td>
                     <td className="col-num">
@@ -335,14 +435,19 @@ export function LayoutsPage({ colors }: Props) {
                     <td className="cell-muted" title={l.source_filename ?? undefined}>{l.file}{l.error && <span className="status-alarm"> · {l.error}</span>}</td>
                     <td className="cell-muted">{formatSavedAt(l.saved_at)}</td>
                     <td>
-                      {confirmDelete === l.name ? (
-                        <span className="card-actions">
-                          <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => void remove(l.name)} data-testid={`confirm-delete-${l.name}`}>Confirm delete</button>
-                          <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => setConfirmDelete(null)}>Cancel</button>
-                        </span>
-                      ) : (
-                        <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => setConfirmDelete(l.name)} data-testid={`delete-${l.name}`}>Delete</button>
-                      )}
+                      <span className="card-actions">
+                        <button type="button" className="btn btn-sm" disabled={busy !== null || Boolean(l.error)} onClick={() => setHistoryFor(l.name)} data-testid={`history-${l.name}`}>History / edit</button>
+                        {l.hidden ? (
+                          <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => void unhide(l.name)} data-testid={`unhide-${l.name}`}>Bring back</button>
+                        ) : confirmDelete === l.name ? (
+                          <>
+                            <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => void remove(l.name)} data-testid={`confirm-delete-${l.name}`}>Confirm hide</button>
+                            <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => setConfirmDelete(null)}>Cancel</button>
+                          </>
+                        ) : (
+                          <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={() => setConfirmDelete(l.name)} data-testid={`delete-${l.name}`}>Hide</button>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -350,7 +455,7 @@ export function LayoutsPage({ colors }: Props) {
             </table>
           </div>
           <div className="chart-note">
-            Deleting a layout removes its coordinate file; wafer maps for its design names stop working until a layout is uploaded again.
+            Hiding a layout stops it drawing wafer maps but keeps every revision; Bring back restores it. Every save, edit or restore adds a revision, so a mistake can always be rolled back from History.
           </div>
         </section>
       </main>

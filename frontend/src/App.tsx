@@ -10,7 +10,9 @@ import { KpiCards } from './components/KpiCards'
 import { SpatialPanel } from './components/SpatialPanel'
 import { StackedWaferPanel } from './components/StackedWaferPanel'
 import { Tabs, type ViewKey } from './components/Tabs'
+import { LayoutEditorPage } from './pages/LayoutEditorPage'
 import { LayoutsPage } from './pages/LayoutsPage'
+import { WaferMapPage } from './pages/WaferMapPage'
 import { useHashRoute } from './router'
 import { useChartColors } from './theme/chartColors'
 import { useTheme } from './theme/useTheme'
@@ -53,6 +55,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [fileErrors, setFileErrors] = useState<FileError[]>([])
   const bootstrapped = useRef(false)
+  const productRef = useRef<string | null>(null)
+  productRef.current = product
+  const [analysisNonce, setAnalysisNonce] = useState(0)
   const skipNextProductRefresh = useRef(false)
 
   const fail = useCallback((prefix: string, err: unknown) => {
@@ -196,7 +201,12 @@ export default function App() {
       .catch(() => {
         /* the list keeps its previous value; the next action surfaces the error */
       })
-  }, [route])
+    // A layout may have been revised on the Layouts page: redraw with the current revision
+    // so the map's coordinates and the analysis (computed on the new layout) stay aligned.
+    if (productRef.current) {
+      void loadReference(productRef.current).then(() => setAnalysisNonce((n) => n + 1))
+    }
+  }, [route, loadReference])
 
   // Analyze whenever the session, wafer selection or bandwidth changes (debounced for the slider).
   useEffect(() => {
@@ -227,17 +237,44 @@ export default function App() {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [session, selectedWafers, bandwidth, fail])
+  }, [session, selectedWafers, bandwidth, fail, analysisNonce])
 
   useEffect(() => {
     if (analysis && !analysis.wafers.includes(individualWafer)) setIndividualWafer(analysis.wafers[0])
   }, [analysis, individualWafer])
+
+  // A new page (e.g. wafer map -> Layout Editor) starts at the top, not at the old scroll position.
+  useEffect(() => {
+    try {
+      window.scrollTo(0, 0)
+    } catch {
+      /* jsdom: not implemented */
+    }
+  }, [route])
 
   if (route === 'layouts') {
     return (
       <div className="app">
         <HeaderBar route={route} product={product} session={session} theme={theme} onToggleTheme={toggle} />
         <LayoutsPage colors={colors} />
+      </div>
+    )
+  }
+
+  if (route === 'editor') {
+    return (
+      // The standalone Layout Editor (production); "#/layouts" stays the prototype's page.
+      <div className="app app-wide app-headless">
+        <LayoutEditorPage colors={colors} theme={theme} onToggleTheme={toggle} />
+      </div>
+    )
+  }
+
+  if (route === 'wafer') {
+    return (
+      // Opened from the dashboards' icon: no app header, the map gets the whole screen.
+      <div className="app app-wide app-headless">
+        <WaferMapPage colors={colors} search={window.location.search} theme={theme} onToggleTheme={toggle} />
       </div>
     )
   }

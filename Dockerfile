@@ -12,6 +12,7 @@ WORKDIR /app/backend
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/engine ./engine
+COPY backend/wafermap ./wafermap
 COPY backend/app.py backend/launch.py ./
 COPY backend/coordinates ./coordinates
 COPY backend/examples ./examples

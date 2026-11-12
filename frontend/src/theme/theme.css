@@ -1,5 +1,5 @@
 /* Sentient Navigator design system tokens (dark default, light override),
-   matching the other operationalized dashboards. Spring Wafer Intelligence
+   matching the other operationalized dashboards. Wafer Defect Map Intelligence
    adds wafer-surface and gang-outline tokens. The five spring STATUS colors
    (Good / Low / Med / Killer / Uninspected) are the domain palette from the
    reference app and are supplied by the API, not by the theme. */
@@ -940,5 +940,721 @@ td.col-num {
 
   .plot-wafer {
     height: 560px;
+  }
+}
+
+/* ---------- Wafer Map page: map fills the viewport, details in a right sidebar ---------- */
+.app-wide {
+  max-width: none;
+  padding: 0 14px 24px;
+}
+
+/* The Wafer Map page has no app header (it is opened from the dashboards). */
+.app-headless {
+  padding-top: 8px;
+}
+
+.wafer-page {
+  width: 100%;
+}
+
+/* The stage takes the viewport below the toolbar (8px padding + 30px bar + 8px
+   gap, plus a small bottom margin), so the whole wafer is visible without
+   scrolling. Tables follow below. */
+.wafer-stage {
+  display: grid;
+  /* --map-col is set by the page: the map card hugs map + list, details take the rest. */
+  grid-template-columns: var(--map-col, minmax(0, 1fr)) minmax(340px, 1fr);
+  gap: 14px;
+  height: calc(100vh - 60px);
+  min-height: 520px;
+}
+
+.wafer-stage > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+.wafer-stage-map {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+
+/* Map + status list: one unit, centered; the page sizes the square map to the
+   space left beside the fixed-width list, so they always sit together. */
+.map-pair-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.map-pair {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 12px;
+  height: 100%;
+}
+
+.plot-square {
+  flex: none;
+}
+
+.plot-fill {
+  width: 100%;
+  height: 100%;
+}
+
+.plot-square .no-layout {
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.status-legend {
+  width: 170px; /* the page sets the width (wider while stages are expanded) */
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border-muted);
+  padding-left: 12px;
+}
+
+.status-legend .status-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.wafer-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin-bottom: 8px;
+}
+
+.wafer-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.wafer-sidebar .card + .card {
+  margin-top: 0;
+}
+
+.wafer-id {
+  margin: 2px 0 6px;
+}
+
+.wafer-status {
+  margin-bottom: 14px;
+}
+
+.status-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.status-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.status-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-row:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.status-row.is-focused {
+  border-color: var(--sel-border);
+  background: var(--sel);
+}
+
+.status-row.is-dimmed {
+  opacity: 0.45;
+}
+
+.status-row:disabled {
+  cursor: default;
+}
+
+/* Name column as wide as the longest code (set on the list), count right after it. */
+.status-name {
+  flex: none;
+  width: var(--name-w, 6ch);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-count {
+  margin-left: 4px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.no-layout {
+  height: 560px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+  padding: 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: var(--inset);
+}
+
+.no-layout-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--bad);
+}
+
+.no-layout-text {
+  max-width: 620px;
+  color: var(--text-2);
+}
+
+.no-layout-hint {
+  max-width: 560px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.facts dt {
+  color: var(--text-3);
+}
+
+.facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.break {
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Layout editor: revisions + in-browser edit ---------- */
+.row-hidden td {
+  opacity: 0.55;
+}
+
+.editor-grid input {
+  width: 100%;
+  min-width: 60px;
+  background: var(--inset);
+  border: 1px solid var(--border-muted);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.editor-grid input.cell-changed {
+  border-color: var(--warn);
+}
+
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+@media (max-width: 1100px) {
+  .wafer-stage {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .wafer-stage-map {
+    height: 80vh;
+  }
+
+  .wafer-sidebar {
+    overflow: visible;
+  }
+}
+
+.one-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spin-icon {
+  display: inline-block;
+  animation: swi-spin 0.9s linear infinite;
+}
+
+/* Code row + its stage expander on one line; stage rows indented underneath. */
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.status-line .status-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.expand-btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.expand-btn:hover {
+  background: var(--hover);
+}
+
+.stage-list {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0 0 0 22px;
+  border-left: 1px solid var(--border-muted);
+  margin-left: 10px;
+}
+
+.stage-row {
+  font-size: 11px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.stage-name {
+  flex: none;
+  width: var(--stage-w, 11ch);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Some (not all) of a code's stages are selected. */
+.status-row.is-partial {
+  border-color: var(--sel-border);
+  border-style: dashed;
+}
+
+/* ---------- Map filters ---------- */
+.legend-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-btn.is-active {
+  border-color: var(--sel-border);
+  background: var(--sel);
+  color: var(--accent-fg);
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 70%;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid var(--sel-border);
+  border-radius: 10px;
+  background: var(--sel);
+  font-size: 11px;
+}
+
+.filter-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-chip button {
+  border: none;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 2px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+
+.filter-dialog {
+  width: min(1040px, 100%);
+}
+
+.filter-dialog-body {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.filter-library {
+  border-right: 1px solid var(--border-muted);
+  padding-right: 14px;
+  min-width: 0;
+}
+
+.filter-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-item {
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.filter-item.is-current {
+  border-color: var(--sel-border);
+}
+
+.filter-item-main {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 0 6px;
+}
+
+.filter-item-desc {
+  display: block;
+  color: var(--text-3);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.filter-match {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 12px;
+  margin: 6px 0 8px;
+}
+
+.filter-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.filter-rule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+}
+
+.filter-rule select.input,
+.filter-rule input.input {
+  width: auto;
+  min-width: 0;
+}
+
+.filter-rule input[type='text'].input {
+  flex: 1 1 140px;
+}
+
+.digits-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.digits-field input {
+  width: 56px !important;
+}
+
+.input-invalid {
+  border-color: var(--warn) !important;
+}
+
+.filter-preview {
+  margin: 10px 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.filter-history {
+  margin-top: 10px;
+}
+
+@media (max-width: 800px) {
+  .filter-dialog-body {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-library {
+    border-right: none;
+    padding-right: 0;
+  }
+}
+
+/* ---------- Standalone Layout Editor (#/editor) ---------- */
+/* A column exactly one screen tall: toolbar, optional banners, then the stage takes what is left. */
+.editor-page {
+  width: 100%;
+  height: calc(100vh - 34px); /* 8px top padding + 24px app bottom padding + 2px */
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-page > .warning-banner,
+.editor-page > .error-banner {
+  flex: none;
+  margin-bottom: 8px;
+}
+
+.editor-topbar {
+  justify-content: flex-start;
+}
+
+.editor-title {
+  font-size: 15px;
+}
+
+.editor-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.editor-author .input {
+  width: 160px;
+}
+
+/* [ layouts ] [ square map ] [ details ] filling the viewport below the toolbar. */
+.editor-stage {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 420px;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 420px;
+}
+
+.editor-stage > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.editor-list-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.editor-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.editor-list-item:hover {
+  background: var(--hover);
+}
+
+.editor-list-item.is-current {
+  border-color: var(--sel-border);
+  background: var(--sel);
+}
+
+.editor-list-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-list-names {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.match-pill {
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--sel);
+  border: 1px solid var(--sel-border);
+  color: var(--accent-fg);
+}
+
+.editor-map-card {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+
+.editor-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: var(--inset);
+  color: var(--text-2);
+  box-sizing: border-box;
+}
+
+.editor-side {
+  overflow-y: auto;
+}
+
+.editor-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.editor-panel .card + .card {
+  margin-top: 0;
+}
+
+.editor-rows-scroll {
+  max-height: 46vh;
+}
+
+@media (max-width: 1300px) {
+  .editor-stage {
+    grid-template-columns: 240px minmax(0, 1fr) 360px;
+  }
+}
+
+@media (max-width: 1050px) {
+  .editor-page {
+    height: auto;
+  }
+
+  .editor-stage {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .editor-list {
+    max-height: 320px;
+  }
+
+  .editor-map-card {
+    height: 80vh;
+  }
+
+  .editor-side {
+    overflow: visible;
   }
 }

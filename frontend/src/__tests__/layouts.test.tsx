@@ -153,7 +153,7 @@ describe('Layouts page', () => {
     const table = await screen.findByTestId('layouts-table')
     expect(within(table).getAllByText('152-900530D')).toHaveLength(2) // layout name + product name
     expect(within(table).getByText('20,952')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Layouts' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Wafer Layout Editor' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('tablist', { name: 'Views' })).not.toBeInTheDocument()
     expect(calls.map((c) => c.url)).not.toContain('/api/examples')
 
@@ -175,7 +175,9 @@ describe('Layouts page', () => {
     expect(screen.getByTestId('save-layout')).toBeDisabled()
     expect(screen.queryByTestId('name-taken')).not.toBeInTheDocument()
     const save = calls.find((c) => c.url === '/api/layouts' && c.method === 'POST')
-    expect(save?.body).toEqual({ file: 'NEW-LAYOUT.csv', name: 'NEW-LAYOUT', products: '152-900999A, 152-900999B', replace: 'false' })
+    expect(save?.body).toEqual({
+      file: 'NEW-LAYOUT.csv', name: 'NEW-LAYOUT', products: '152-900999A, 152-900999B', product_groups: '', replace: 'false', action: 'upload',
+    })
     await waitFor(() => expect(within(screen.getByTestId('layouts-table')).getByText('152-900999A, 152-900999B')).toBeInTheDocument())
   })
 
@@ -192,7 +194,7 @@ describe('Layouts page', () => {
     expect(screen.getByText('Grid pitch')).toBeInTheDocument()
     expect(screen.getByText('µm → mm')).toBeInTheDocument()
     expect(screen.getByTestId('preview-warnings')).toHaveTextContent('micrometres')
-    expect(screen.getByText(/Die layout \(no spring level\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Die layout \(no feature level\)/)).toBeInTheDocument()
   })
 
   it('requires Replace for an existing name and shows save errors', async () => {
@@ -209,17 +211,17 @@ describe('Layouts page', () => {
     await screen.findByTestId('layout-map')
     expect(screen.getByTestId('name-taken')).toBeInTheDocument()
     expect(screen.getByTestId('save-layout')).toBeDisabled()
-    await userEvent.click(screen.getByLabelText(/Replace existing layout/))
+    await userEvent.click(screen.getByLabelText(/Save as a new revision/))
     expect(screen.getByTestId('save-layout')).toBeEnabled()
     await userEvent.click(screen.getByTestId('save-layout'))
     expect(await screen.findByTestId('save-error')).toHaveTextContent('already exists')
   })
 
-  it('shows parse errors from the preview and deletes with confirmation', async () => {
+  it('shows parse errors from the preview and hides with confirmation', async () => {
     const { calls } = installFetchStub({
       '/api/layouts': () => json({ layouts: [makeLayoutItem()] }),
       '/api/layouts/preview': () => json({ detail: "Reference must contain {'Die_Num', 'Spring_Num', 'X', 'Y'}. Found: ['Die_Num', 'Spring_Num', 'X']" }, 422),
-      '/api/layouts/152-900530D': () => json({ name: '152-900530D', file: '152-900530D.xlsx', products: ['152-900530D'] }),
+      '/api/layouts/152-900530D/hidden': () => json(makeLayoutItem({ hidden: true })),
     })
     render(<App />)
     await screen.findByTestId('layouts-table')
@@ -228,9 +230,11 @@ describe('Layouts page', () => {
     expect(screen.queryByTestId('layout-map')).not.toBeInTheDocument()
 
     await userEvent.click(screen.getByTestId('delete-152-900530D'))
-    expect(calls.some((c) => c.method === 'DELETE')).toBe(false)
+    expect(calls.some((c) => c.url.endsWith('/hidden'))).toBe(false)
     await userEvent.click(screen.getByTestId('confirm-delete-152-900530D'))
-    await waitFor(() => expect(calls.some((c) => c.method === 'DELETE' && c.url === '/api/layouts/152-900530D')).toBe(true))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/api/layouts/152-900530D/hidden')).toBe(true))
+    const hide = calls.find((c) => c.url === '/api/layouts/152-900530D/hidden')
+    expect(hide?.body).toMatchObject({ hidden: true })
   })
 
   it('does not bootstrap the wafer map while on the layouts page, then does so on navigation', async () => {
@@ -241,7 +245,7 @@ describe('Layouts page', () => {
     navigate('map')
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     await waitFor(() => expect(screen.getByRole('tablist', { name: 'Views' })).toBeInTheDocument(), { timeout: 4000 })
-    expect(screen.getByRole('link', { name: 'Wafer map' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Workbench' })).toHaveAttribute('aria-current', 'page')
     expect(calls.filter((c) => c.url === '/api/products')).toHaveLength(1)
   })
 

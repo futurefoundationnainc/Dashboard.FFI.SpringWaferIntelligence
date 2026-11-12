@@ -85,8 +85,21 @@ def read_registry(ref_dir: Path | str) -> dict:
     return {"layouts": [e for e in (entries or []) if isinstance(e, dict) and e.get("name") and e.get("file")]}
 
 
+def entry_files(entry: dict) -> set[str]:
+    """Every file a registry entry owns: the current one and all its revisions."""
+    return {entry["file"], *(str(r["file"]) for r in entry.get("revisions") or [] if isinstance(r, dict) and r.get("file"))}
+
+
 def registered_files(ref_dir: Path | str) -> set[str]:
-    return {e["file"] for e in read_registry(ref_dir)["layouts"]}
+    return {f for e in read_registry(ref_dir)["layouts"] for f in entry_files(e)}
+
+
+def entry_products(entry: dict) -> list[str]:
+    return [str(p) for p in (entry.get("products") or [entry["name"]])]
+
+
+def entry_groups(entry: dict) -> list[str]:
+    return [str(g) for g in (entry.get("product_groups") or [])]
 
 
 def implicit_product(path: Path) -> str:
@@ -95,16 +108,16 @@ def implicit_product(path: Path) -> str:
 
 
 def list_products(ref_dir: Path | str = DEFAULT_REF_DIR) -> list[str]:
-    """Every product / design name that resolves to a layout file."""
+    """Every product / design name that resolves to a layout file (hidden layouts excluded)."""
     ref_dir = Path(ref_dir)
     if not ref_dir.is_dir():
         return []
     registry = read_registry(ref_dir)
     names: set[str] = set()
     for entry in registry["layouts"]:
-        if (ref_dir / entry["file"]).is_file():
-            names.update(str(p) for p in (entry.get("products") or [entry["name"]]))
-    registered = {e["file"] for e in registry["layouts"]}
+        if not entry.get("hidden") and (ref_dir / entry["file"]).is_file():
+            names.update(entry_products(entry))
+    registered = registered_files(ref_dir)
     for p in _reference_files(ref_dir):
         if p.name not in registered:
             names.add(implicit_product(p))
@@ -113,19 +126,43 @@ def list_products(ref_dir: Path | str = DEFAULT_REF_DIR) -> list[str]:
 
 def resolve_product(product: str, ref_dir: Path | str = DEFAULT_REF_DIR) -> Path | None:
     """The layout file for ``product``: registry alias first, then the original stem rule."""
+    found = resolve_layout(product, None, ref_dir)
+    return found["path"] if found else None
+
+
+def resolve_layout(product: str | None, product_group: str | None, ref_dir: Path | str = DEFAULT_REF_DIR) -> dict | None:
+    """Which layout draws a wafer: ``{name, path, matched_by, revision}`` or ``None``.
+
+    An exact ``PRODUCT`` match wins (registry entries, then implicit files by
+    the original stem rule); otherwise a ``PRODUCTGROUP`` match. Hidden
+    layouts never match. ``revision`` is the current (latest) revision number.
+    """
     ref_dir = Path(ref_dir)
     if not ref_dir.is_dir():
         return None
-    registry = read_registry(ref_dir)
-    for entry in registry["layouts"]:
-        if product in [str(p) for p in (entry.get("products") or [entry["name"]])]:
-            path = ref_dir / entry["file"]
-            return path if path.is_file() else None
-    registered = {e["file"] for e in registry["layouts"]}
-    matches = [p for p in _reference_files(ref_dir) if p.name not in registered and (p.stem == product or p.stem.startswith(product + ' '))]
-    if not matches:
-        return None
-    return sorted(matches, key=lambda x: x.suffix != '.xlsx')[0]
+    entries = [e for e in read_registry(ref_dir)["layouts"] if not e.get("hidden")]
+
+    def found(entry: dict, matched_by: str) -> dict | None:
+        path = ref_dir / entry["file"]
+        if not path.is_file():
+            return None
+        revisions = entry.get("revisions") or []
+        return {"name": entry["name"], "path": path, "matched_by": matched_by, "revision": len(revisions) or 1}
+
+    if product:
+        for entry in entries:
+            if product in entry_products(entry):
+                return found(entry, "product")
+        registered = registered_files(ref_dir)
+        matches = [p for p in _reference_files(ref_dir) if p.name not in registered and (p.stem == product or p.stem.startswith(product + ' '))]
+        if matches:
+            path = sorted(matches, key=lambda x: x.suffix != '.xlsx')[0]
+            return {"name": path.stem, "path": path, "matched_by": "product", "revision": 1}
+    if product_group:
+        for entry in entries:
+            if product_group in entry_groups(entry):
+                return found(entry, "product_group")
+    return None
 
 
 def parse_reference(source: Path | str | IO, suffix: str | None = None) -> tuple[pd.DataFrame, tuple[float, float]]:

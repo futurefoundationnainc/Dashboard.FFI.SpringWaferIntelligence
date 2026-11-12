@@ -7,3 +7,7 @@
 screenshots
 reference-source
 .env
+backend/dev-share
+backend/.cache
+backend/examples/iXML#*
+data

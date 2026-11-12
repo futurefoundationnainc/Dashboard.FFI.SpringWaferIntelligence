@@ -1,4 +1,4 @@
-# Handoff — Spring Wafer Intelligence
+# Handoff — Wafer Defect Map Intelligence
 
 ## 1. What this is
 

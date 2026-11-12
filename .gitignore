@@ -18,5 +18,15 @@ Thumbs.db
 
 # Layouts saved through the Layouts page are runtime data; only the bundled reference is tracked
 backend/coordinates/layouts.json
+backend/coordinates/map_filters.json
 backend/coordinates/*.csv
 backend/coordinates/.*.tmp
+
+# Wafer Map: local stand-in for the file share, and the lookup/parse cache
+backend/dev-share/
+backend/.cache/
+# Real customer iXML samples stay local (the 2D one is ~43 MB)
+backend/examples/iXML#*.xml
+
+# Local test data for the Wafer Map (layouts + share cache): never committed
+/data/

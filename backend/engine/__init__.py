@@ -1,4 +1,4 @@
-"""Spring Wafer Intelligence analysis engine.
+"""Wafer Defect Map Intelligence analysis engine.
 
 Pure Python / pandas / numpy / scipy. No Streamlit, no Plotly, no FastAPI.
 The functions are the ones from the original Streamlit ``app.py`` moved over
@@ -25,11 +25,34 @@ from .analysis import (
 )
 from .gang_yield import SCRAP_THRESHOLD, gang_yield
 from .inspection import InspectionError, combine_inspections, read_inspection, validate_inspection, validate_keys
-from .layouts import LayoutError, LayoutSummary, delete_layout, list_layouts, preview_layout, reference_payload, save_layout, summarize_reference
-from .reference import ReferenceError, gang_bounds, list_products, load_reference, parse_reference, resolve_product, valid_spring_keys
-from .xml_adapter import CloudPcsAdapterError, grading_to_status, read_cloudpcs_xml
+from .layouts import (
+    LayoutError,
+    LayoutSummary,
+    delete_layout,
+    get_layout,
+    list_layouts,
+    load_revision,
+    preview_layout,
+    reference_payload,
+    restore_revision,
+    save_layout,
+    set_layout_hidden,
+    summarize_reference,
+    update_layout_names,
+)
+from .reference import ReferenceError, gang_bounds, list_products, load_reference, parse_reference, resolve_layout, resolve_product, valid_spring_keys
+from .xml_adapter import CloudPcsAdapterError, CloudPcsExport, grading_to_status, parse_cloudpcs_export, place_export, read_cloudpcs_xml
 
 __all__ = [
+    "update_layout_names",
+    "set_layout_hidden",
+    "restore_revision",
+    "resolve_layout",
+    "place_export",
+    "parse_cloudpcs_export",
+    "load_revision",
+    "get_layout",
+    "CloudPcsExport",
     "STATES",
     "SCRAP_THRESHOLD",
     "CloudPcsAdapterError",

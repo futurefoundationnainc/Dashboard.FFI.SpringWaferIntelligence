@@ -121,6 +121,40 @@ export function segmentCoordinates(x: number[], y: number[], indices: number[]):
   return { xs, ys }
 }
 
+/* Optional rendering choices for the single-wafer figure.
+   - farmDies: dies drawn with a dotted accent outline (3D FARM_DIE = F).
+   - mask:     per position, whether it is drawn (from the status / stage filter); null = all.
+   - stages:   per position, its scrap stage, added to the hover text (null = none).
+   - legend:   false hides Plotly's legend (the Wafer Map page lists statuses beside the map).
+   - compact:  tight margins so the wafer uses all of a viewport-sized container.
+   - featureLabel: what the unit inside a die is called in the hover ("Spring" on the workbench,
+               "Feature" on the Wafer Map page). */
+export interface IndividualFigureOptions {
+  farmDies?: ReadonlySet<number>
+  mask?: ReadonlyArray<boolean> | null
+  stages?: ReadonlyArray<string | null> | null
+  featureLabel?: string
+  legend?: boolean
+  compact?: boolean
+}
+
+function pageLayout(options: IndividualFigureOptions): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (options.legend === false) out.showlegend = false
+  if (options.compact) out.margin = { l: 40, r: 12, t: 12, b: 36 }
+  return out
+}
+
+function drawn(i: number, mask: ReadonlyArray<boolean> | null | undefined): boolean {
+  return !mask || mask[i]
+}
+
+/* "H8" or "H8 · 3848S2AID" for hover text. */
+function statusWithStage(status: string, i: number, stages: ReadonlyArray<string | null> | null | undefined): string {
+  const stage = stages?.[i]
+  return stage ? `${status} · ${stage}` : status
+}
+
 /* springs_plot(categorical=True): one line trace per status + a near-invisible
    marker layer that carries the die / spring / status hover. */
 /* Die layouts: one filled cell per die (layout shapes), legend entries as
@@ -150,17 +184,27 @@ function buildIndividualDieFigure(
   statusColors: Record<string, string>,
   colors: ChartColors,
   dieLabels: boolean,
+  options: IndividualFigureOptions,
 ): Figure {
+  const farmDies = options.farmDies ?? new Set<number>()
   const present = new Set(statusCodes)
   const shapes = reference.x.map((x, i) => {
     const cell = dieCell(x, reference.y[i], reference.pitch)
     const state = states[statusCodes[i]] ?? 'Uninspected'
+    const farm = farmDies.has(reference.die[i])
     return {
       type: 'rect', xref: 'x', yref: 'y', ...cell,
-      fillcolor: statusColors[state], line: { color: colors.border, width: 0.6 }, layer: 'below',
+      // A die that is filtered out keeps only its cell outline, so the die grid stays readable.
+      fillcolor: drawn(i, options.mask) ? statusColors[state] : 'rgba(0,0,0,0)',
+      // Farm dies (FARM_DIE = F) keep their status color but get a dashed accent outline.
+      line: farm ? { color: colors.accentFg, width: 2, dash: 'dot' } : { color: colors.border, width: 0.6 },
+      layer: 'below',
     }
   })
-  const custom = reference.die.map((die, i) => [die, states[statusCodes[i]] ?? 'Uninspected'])
+  const custom = reference.die.map((die, i) => [
+    farmDies.has(die) ? `${die} (farm die)` : die,
+    statusWithStage(states[statusCodes[i]] ?? 'Uninspected', i, options.stages),
+  ])
   const data: Record<string, unknown>[] = [
     ...dieLegendTraces(states, present, statusColors),
     {
@@ -174,6 +218,7 @@ function buildIndividualDieFigure(
   return decorate(data, reference, colors, false, {
     shapes, annotations: dieLabels ? dieAnnotations(reference, colors) : [],
     legend: { orientation: 'h', y: 1.04, x: 0, font: { color: colors.text2 }, itemclick: 'toggleothers', itemdoubleclick: 'toggle', itemsizing: 'constant' },
+    ...pageLayout(options),
   })
 }
 
@@ -184,16 +229,19 @@ export function buildIndividualFigure(
   statusColors: Record<string, string>,
   colors: ChartColors,
   dieLabels: boolean,
+  options: IndividualFigureOptions = {},
 ): Figure {
-  if (reference.kind === 'die') return buildIndividualDieFigure(reference, statusCodes, states, statusColors, colors, dieLabels)
+  if (reference.kind === 'die') return buildIndividualDieFigure(reference, statusCodes, states, statusColors, colors, dieLabels, options)
   const data: Record<string, unknown>[] = []
   const byState: number[][] = states.map(() => [])
   statusCodes.forEach((code, i) => {
     if (byState[code]) byState[code].push(i)
   })
+  const visible: number[] = []
   states.forEach((state, code) => {
-    const idx = byState[code]
+    const idx = options.mask ? byState[code].filter((i) => drawn(i, options.mask)) : byState[code]
     if (!idx.length) return
+    for (const i of idx) visible.push(i) // no spread: layouts can exceed the engine's argument limit
     const { xs, ys } = segmentCoordinates(reference.x, reference.y, idx)
     data.push({
       type: 'scattergl', mode: 'lines', x: xs, y: ys,
@@ -201,15 +249,18 @@ export function buildIndividualFigure(
       name: state, hoverinfo: 'skip', connectgaps: false,
     })
   })
-  const custom = reference.die.map((die, i) => [die, reference.spring[i], states[statusCodes[i]] ?? 'Uninspected'])
+  // Hover only where something is drawn (all springs when nothing is filtered).
+  const hoverIdx = visible.length === statusCodes.length ? null : visible.sort((a, b) => a - b)
+  const pick = <T,>(arr: T[]): T[] => (hoverIdx ? hoverIdx.map((i) => arr[i]) : arr)
+  const custom = pick(reference.die.map((die, i) => [die, reference.spring[i], statusWithStage(states[statusCodes[i]] ?? 'Uninspected', i, options.stages)]))
   data.push({
-    type: 'scattergl', mode: 'markers', x: reference.x, y: reference.y,
+    type: 'scattergl', mode: 'markers', x: pick(reference.x), y: pick(reference.y),
     marker: { size: 5, opacity: 0.015, color: '#111111' },
     customdata: custom,
-    hovertemplate: 'Die %{customdata[0]} | Spring %{customdata[1]}<br>Status: %{customdata[2]}<extra></extra>',
+    hovertemplate: `Die %{customdata[0]} | ${options.featureLabel ?? 'Spring'} %{customdata[1]}<br>Status: %{customdata[2]}<extra></extra>`,
     showlegend: false, name: 'Springs',
   })
-  return decorate(data, reference, colors, dieLabels)
+  return decorate(data, reference, colors, dieLabels, pageLayout(options))
 }
 
 /* springs_plot(categorical=False): continuous color by defect frequency.
@@ -282,7 +333,7 @@ export function buildStackedFigure(
    it is saved. */
 export type LayoutGeometry = Pick<Reference, 'kind' | 'pitch' | 'die' | 'spring' | 'x' | 'y' | 'gangs'>
 
-export function buildLayoutFigure(layout: LayoutGeometry, colors: ChartColors, dieLabels: boolean): Figure {
+export function buildLayoutFigure(layout: LayoutGeometry, colors: ChartColors, dieLabels: boolean, featureLabel = 'Feature'): Figure {
   const reference = layout as Reference
   if (layout.kind === 'die') {
     const shapes = layout.x.map((x, i) => ({
@@ -313,7 +364,7 @@ export function buildLayoutFigure(layout: LayoutGeometry, colors: ChartColors, d
       type: 'scattergl', mode: 'markers', x: layout.x, y: layout.y,
       marker: { size: 5, opacity: 0.015, color: '#111111' },
       customdata: custom,
-      hovertemplate: 'Die %{customdata[0]} | Spring %{customdata[1]}<br>X %{x:.3f} mm · Y %{y:.3f} mm<extra></extra>',
+      hovertemplate: `Die %{customdata[0]} | ${featureLabel} %{customdata[1]}<br>X %{x:.3f} mm · Y %{y:.3f} mm<extra></extra>`,
       showlegend: false, name: 'Springs',
     },
   ]
