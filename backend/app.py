@@ -71,11 +71,14 @@ from engine import (
 from engine.gang_yield import GANG_YIELD_RULE, SCRAP_THRESHOLD
 from engine.reference import KIND_DIE, layout_kind
 from wafermap import PLANS, Locator, SourceError, WaferNotFound, load_settings, make_source
+from wafermap.health import health as deployment_health
+from wafermap.settings import layouts_dir
 from wafermap.filters import FilterError, FilterStore
 from wafermap.locator import matching_sample
 
 ROOT = Path(__file__).resolve().parent
-REF_DIR = Path(os.environ.get("REF_DIR", ROOT / "coordinates"))
+# Layouts (+ revisions + map filters): REF_DIR env > appsettings.json DataDir\layouts > backend/coordinates.
+REF_DIR = layouts_dir()
 EXAMPLES_DIR = ROOT / "examples"
 EXAMPLES_PRODUCT = "152-900530D"
 DEFAULT_STATIC_DIR = ROOT.parent / "frontend" / "dist"
@@ -652,8 +655,10 @@ def _csv_response(frame: pd.DataFrame, filename: str) -> Response:
 
 # --------------------------------------------------------------------------- endpoints
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    """Deployment check (see backend/DEPLOY.md, section C): settings found, data folder configured,
+    exists and really writable (probe file), cache folder writable, file share configured."""
+    return deployment_health(REF_DIR, load_settings())
 
 
 @app.get("/api/products", response_model=ProductsResponse)
@@ -1139,7 +1144,16 @@ class StripBasePath:
         self.prefix = "/" + prefix.strip("/") if prefix.strip("/") else ""
 
     async def __call__(self, scope, receive, send):
-        if self.prefix and scope["type"] in ("http", "websocket"):
+        if not self.prefix and scope["type"] in ("http", "websocket"):
+            # No APP_BASE_PATH: infer it, the way the ASP.NET Core Module supplies the GroupsApi's path
+            # base. Under IIS the API is the "api" application nested in the dashboard application, so
+            # HttpPlatformHandler forwards "/<dashboard path>/api/..."; everything before "/api/" is the base.
+            path = scope.get("path", "")
+            cut = path.find("/api/")
+            if cut > 0 or (cut < 0 and path.endswith("/api") and len(path) > 4):
+                base = path[:cut] if cut > 0 else path[:-4]
+                scope = dict(scope, path=path[len(base):], root_path=scope.get("root_path", "") + base)
+        elif self.prefix and scope["type"] in ("http", "websocket"):
             path = scope.get("path", "")
             if path == self.prefix and scope["type"] == "http":
                 # "/wafermap?sample=.." -> "/wafermap/?sample=..": relative "api/" and "./assets" need the slash.

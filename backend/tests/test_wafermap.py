@@ -312,3 +312,33 @@ def test_map_filter_library(wafermap_env):
     assert client.post(f"/api/map-filters/{fid}/hidden", json={"hidden": False}).status_code == 422
     assert client.get("/api/map-filters/nope").status_code == 404
     assert (wafermap_env / "map_filters.json").is_file()  # stored next to the layouts
+
+
+def test_appsettings_and_health(tmp_path, monkeypatch):
+    """appsettings.json points the API at its data folder (like the GroupsApi); env vars override; health proves it."""
+    import json as _json
+    from wafermap import settings as s
+    from wafermap.health import health as deployment_health
+    data = tmp_path / "dashboard-data" / "wafermap"
+    (data / "layouts").mkdir(parents=True)
+    cfg = tmp_path / "appsettings.json"
+    cfg.write_text(_json.dumps({"DataDir": str(data), "FileShare": {"SasUrl": "https://acct.file.core.windows.net/?sig=SECRET", "ShareName": "share-x", "SettledDays": 60}}), encoding="utf-8")
+    for var in ("REF_DIR", "WAFERMAP_CACHE_DIR", "WAFERMAP_SAS_URL", "WAFERMAP_SOURCE", "WAFERMAP_SHARE", "WAFERMAP_SETTLED_DAYS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("WAFERMAP_APPSETTINGS", str(cfg))
+    assert s.layouts_dir() == data / "layouts" and s.data_dir_configured()
+    st = s.load_settings()
+    assert (st.source, st.share, st.settled_days, st.cache_dir) == ("azure", "share-x", 60, data / "cache")
+    monkeypatch.setenv("WAFERMAP_SETTLED_DAYS", "5")  # environment wins
+    assert s.load_settings().settled_days == 5
+    (data / "cache").mkdir()
+    (data / "layouts" / "L.csv").write_text("Die_Num,X,Y\n1,0,0\n", encoding="utf-8")
+    report = deployment_health(s.layouts_dir(), s.load_settings())
+    assert report["status"] == "ok", report["problems"]
+    assert report["layoutsDir"]["writable"] and report["layoutsDir"]["fileCount"] == 1 and report["cacheDir"]["writable"]
+    assert "SECRET" not in _json.dumps(report)
+    # missing folder -> degraded with the fix in the message
+    import shutil
+    shutil.rmtree(data / "cache")
+    report = deployment_health(s.layouts_dir(), s.load_settings())
+    assert report["status"] == "degraded" and "does not exist" in report["error"]

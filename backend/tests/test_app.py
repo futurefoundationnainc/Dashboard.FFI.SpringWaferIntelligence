@@ -31,7 +31,9 @@ def analysis(examples_session) -> dict:
 
 
 def test_health_and_products():
-    assert client.get("/api/health").json() == {"status": "ok"}
+    body = client.get("/api/health").json()
+    assert body["layoutsDir"]["exists"] is True and body["layoutsDir"]["writable"] is True
+    assert body["fileShare"]["source"] in ("local", "azure") and "SasUrl" not in str(body)
     body = client.get("/api/products").json()
     assert PRODUCT in body["products"]  # other layouts may have been saved through the Layouts page
     assert body["examples_product"] == PRODUCT and body["examples_available"] is True
@@ -334,3 +336,10 @@ def test_layout_preview_rejects_bad_files(layout_dir):
 
 def test_static_mount_not_required_for_api():
     assert client.get("/api/health").status_code == 200
+
+
+def test_path_base_inferred_under_iis_nested_api():
+    """IIS layout: dashboard app at /<path>, API app nested at /<path>/api; HttpPlatformHandler forwards the full path."""
+    assert client.get("/dashboard.wafermap/api/health").status_code == 200
+    assert client.get("/a/b/api/wafermap/config").json()["plans"]["2d"] == "WaferYield_DefectMonitor"
+    assert client.get("/api/health").status_code == 200  # root (dev / Docker) unchanged

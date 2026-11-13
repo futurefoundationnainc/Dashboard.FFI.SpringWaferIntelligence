@@ -52,7 +52,7 @@ frontend/
   src/pages/          WaferMapPage (?sample=), LayoutsPage + LayoutHistory (#/layouts); router.ts
   src/theme/          suite design tokens (dark default / light), chart color resolution
 reference-source/     the original Streamlit app, unmodified (parity reference)
-deploy/               IIS sub-application: web.config (HttpPlatformHandler) + DEPLOY.md runbook
+deploy/               Package-WaferMap.ps1 (build PC) + Deploy-WaferMap.ps1 (IIS VM) + serve-local.mjs (local IIS-shape harness); runbook: backend/DEPLOY.md
 screenshots/          captured verification screenshots
 ```
 
@@ -105,7 +105,7 @@ changes), today's and yesterday's for 2 minutes; parsed exports are kept per
 file (a 43 MB 2D export parses in ~3 s once, then loads in < 0.5 s). Settings
 are environment variables, listed in `backend/wafermap/settings.py`
 (`WAFERMAP_SAS_URL` is a secret: server-side only). Deployment on IIS:
-[deploy/DEPLOY.md](deploy/DEPLOY.md).
+[backend/DEPLOY.md](backend/DEPLOY.md) (same steps as the 2D / 3D dashboards).
 
 ## Wafer Layout Editor (`#/layouts`)
 
