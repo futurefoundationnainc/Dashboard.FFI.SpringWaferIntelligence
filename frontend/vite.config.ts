@@ -4,6 +4,8 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [react()],
+  // Relative asset URLs: the same build serves at "/" and as an IIS sub-application ("/wafermap/").
+  base: './',
   server: {
     proxy: {
       '/api': 'http://localhost:8090',

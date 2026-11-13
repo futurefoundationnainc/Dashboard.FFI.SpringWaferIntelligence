@@ -206,12 +206,57 @@ export interface LayoutItem {
   name: string
   file: string
   products: string[]
+  /* PRODUCTGROUP values this layout serves (matched after an exact PRODUCT). */
+  product_groups?: string[]
   implicit: boolean
+  /* Hidden = "deleted": never used for maps, can be brought back. */
+  hidden?: boolean
   saved_at: string | null
   source_filename: string | null
+  /* The latest revision draws every map. */
+  revision?: number
+  revision_count?: number
+  author?: string
+  note?: string
   size_bytes: number
   summary: LayoutSummary | null
   error: string | null
+}
+
+export interface LayoutRevision {
+  rev: number
+  file: string
+  saved_at: string | null
+  author: string | null
+  note: string | null
+  source_filename: string | null
+  action: 'upload' | 'edit' | 'restore' | 'names' | null
+  restored_from: number | null
+  products: string[]
+  product_groups: string[]
+  current: boolean
+  available: boolean
+}
+
+export interface LayoutDetail extends LayoutItem {
+  revisions: LayoutRevision[]
+}
+
+/* One revision's coordinates: centered x / y for drawing, source X / Y (mm) for editing. */
+export interface LayoutGeometry {
+  name: string
+  rev: number
+  kind: LayoutKind
+  pitch: Pitch | null
+  die: number[]
+  spring: number[]
+  x: number[]
+  y: number[]
+  source_x: number[]
+  source_y: number[]
+  gangs: GangBounds[]
+  summary: LayoutSummary
+  caveat: string
 }
 
 export interface LayoutsResponse {
@@ -239,10 +284,142 @@ export interface LayoutSaveRequest {
   products: string
   replace: boolean
   file: File
+  productGroups?: string
+  author?: string
+  note?: string
+  action?: 'upload' | 'edit'
+}
+
+/* ---------- Wafer Map page: one sample, found on the file share ---------- */
+export type WaferMapStatus = 'ok' | 'no_layout' | 'layout_mismatch'
+
+export interface WaferMapFile {
+  plan: '2d' | '3d'
+  plan_label: string
+  /* The DataCollectionPlan from the file name, e.g. WaferYield_DefectMonitor. */
+  collection_plan: string
+  filename: string
+  folder: string
+  timestamp: string
+  candidates_in_folder: number
+  folders_scanned: number
+}
+
+export interface WaferMapSummary {
+  unit: 'die' | 'feature'
+  total: number
+  good: number
+  bad: number
+  yield_pct: number | null
+  farm_dies: number
+  farm_good: number
+  dies: number
+}
+
+export interface WaferMapGangRow {
+  die: number
+  inspected: number
+  bad: number
+  total_springs: number
+  bad_pct: number
+  complete: boolean
+  disposition: string
+}
+
+export interface WaferMapGeometry {
+  kind: LayoutKind
+  pitch: Pitch | null
+  die: number[]
+  spring: number[]
+  x: number[]
+  y: number[]
+  gangs: GangBounds[]
+  center: { x: number; y: number }
+  status_codes: number[]
+  /* Distinct scrap stages (most frequent first) and, per position, its index (-1 = none). */
+  stages?: string[]
+  stage_codes?: number[]
+  uninspected: number
+  /* Per-die disposition of a feature-level wafer (null on die-level wafers). */
+  die_yield: { rows: WaferMapGangRow[]; scrapped: number; total: number; threshold: number; rule: string } | null
+  caveat: string
+}
+
+export interface WaferMap {
+  sample_id: string
+  plan: '2d' | '3d'
+  status: WaferMapStatus
+  message: string | null
+  file: WaferMapFile
+  source: { source: string; location: string; lookback_days: number }
+  product: string
+  product_group: string
+  /* Wafer -> Die -> Feature: 'feature' exports grade each feature (2D springs), 'die' exports grade dies (3D). */
+  level: 'die' | 'feature'
+  /* How to name features on this wafer ("Feature" until layouts supply their own). */
+  feature_label?: { singular: string; plural: string }
+  transaction_id: string | null
+  farm_dies: number[]
+  summary: WaferMapSummary
+  status_counts: StatusCount[]
+  /* Per defect code: its scrap stages with counts, largest first (stage null = not recorded). */
+  status_stages?: Record<string, { stage: string | null; count: number }[]>
+  states: string[]
+  colors: Record<string, string>
+  layout: { name: string; revision: number; matched_by: 'product' | 'product_group'; kind: LayoutKind | null } | null
+  map: WaferMapGeometry | null
+  caveat: string
 }
 
 export interface AnalyzeRequest {
   session_id: string
   wafers: string[] | null
   bandwidth: number
+}
+
+/* ---------- Saved map filters (shared library: revisions, copy, hide) ---------- */
+export type FilterField = 'stage' | 'code' | 'kind'
+export type FilterOp =
+  | 'equals' | 'not_equals' | 'starts_with' | 'not_starts_with' | 'contains' | 'in'
+  | 'num_lt' | 'num_le' | 'num_gt' | 'num_ge' | 'is_empty' | 'not_empty'
+
+export interface FilterRule {
+  field: FilterField
+  op: FilterOp
+  value: string
+  /* Number operators: how many leading characters of the stage form the number (4: "4025S3PLT" -> 4025). */
+  digits?: number
+}
+
+export interface FilterDefinition {
+  match: 'all' | 'any'
+  rules: FilterRule[]
+}
+
+export interface SavedMapFilter {
+  id: string
+  name: string
+  hidden: boolean
+  revision: number
+  revision_count: number
+  saved_at: string
+  author: string
+  note: string
+  definition: FilterDefinition
+  copied_from: string | null
+}
+
+export interface SavedMapFilterRevision {
+  rev: number
+  saved_at: string
+  author: string
+  note: string
+  action: 'create' | 'copy' | 'edit' | 'restore'
+  name: string
+  definition: FilterDefinition
+  restored_from?: number
+}
+
+export interface SavedMapFilterDetail extends SavedMapFilter {
+  revisions: SavedMapFilterRevision[]
 }

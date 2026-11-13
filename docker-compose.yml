@@ -4,6 +4,17 @@ services:
     ports:
       - "8091:8000"
     restart: unless-stopped
+    environment:
+      # Wafer Map: read-only (read + list) SAS for the CloudPCS iXML share. Keep it in .env, never in git.
+      - WAFERMAP_SAS_URL=${WAFERMAP_SAS_URL:-}
+      - WAFERMAP_SHARE=${WAFERMAP_SHARE:-api-fileshare}
+      - WAFERMAP_ROOT=${WAFERMAP_ROOT:-risa}
+      - WAFERMAP_CACHE_DIR=/data/cache
+      - WAFERMAP_PREWARM_DAYS=${WAFERMAP_PREWARM_DAYS:-14}
+    volumes:
+      # Layouts and their revisions must survive a rebuild; so should the lookup cache.
+      - wafermap-coordinates:/app/backend/coordinates
+      - wafermap-cache:/data/cache
 
   # Optional demo tunnel, same pattern as the other operational dashboards.
   # Requires NGROK_AUTHTOKEN in .env; remove the service for local-only use.
@@ -18,3 +29,7 @@ services:
       - spring-wafer-intelligence
     profiles:
       - demo
+
+volumes:
+  wafermap-coordinates:
+  wafermap-cache:

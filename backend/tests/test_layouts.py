@@ -12,6 +12,12 @@ from engine import (
     LayoutError,
     ReferenceError,
     delete_layout,
+    get_layout,
+    load_revision,
+    resolve_layout,
+    restore_revision,
+    set_layout_hidden,
+    update_layout_names,
     list_layouts,
     list_products,
     load_reference,
@@ -43,7 +49,7 @@ def test_preview_warns_on_out_of_wafer_and_uneven_gangs():
     assert any("micrometres" in w for w in summary.warnings) and not any("outside" in w for w in summary.warnings)
     rows = pd.DataFrame({"Die_Num": [1, 1, 2, 3], "Spring_Num": [1, 2, 1, 1], "X": [0, 1, 2, 3], "Y": [0, 1, 2, 3]})
     _, _, summary = preview_layout("uneven.csv", rows.to_csv(index=False).encode())
-    assert any("same spring count" in w for w in summary.warnings)
+    assert any("same feature count" in w for w in summary.warnings)
 
 
 @pytest.mark.parametrize("filename, payload, message", [
@@ -96,14 +102,16 @@ def test_replace_required_and_product_conflicts(tmp_path: Path):
     assert list_products(ref_dir) == ["P1", "P3"]
 
 
-def test_replace_with_different_extension_removes_old_file(tmp_path: Path):
+def test_replace_adds_a_revision_and_keeps_the_old_file(tmp_path: Path):
     ref_dir = tmp_path / "coordinates"
     save_layout(ref_dir, name="L1", products=["P1"], filename="a.csv", payload=csv_bytes())
     xlsx = tmp_path / "a.xlsx"
-    pd.read_csv(pd.io.common.BytesIO(csv_bytes())).to_excel(xlsx, index=False)
-    save_layout(ref_dir, name="L1", products=["P1"], filename="a.xlsx", payload=xlsx.read_bytes(), replace=True)
-    assert (ref_dir / "L1.xlsx").is_file() and not (ref_dir / "L1.csv").exists()
-    assert len(load_reference("P1", ref_dir)[0]) == 20
+    pd.read_csv(pd.io.common.BytesIO(csv_bytes(dies=(1, 2, 3)))).to_excel(xlsx, index=False)
+    item = save_layout(ref_dir, name="L1", products=["P1"], filename="a.xlsx", payload=xlsx.read_bytes(), replace=True, author="ann", note="more dies")
+    assert item["revision"] == 2 and item["file"] == "L1.r002.xlsx" and item["author"] == "ann"
+    assert (ref_dir / "L1.csv").is_file() and (ref_dir / "L1.r002.xlsx").is_file()
+    assert len(load_reference("P1", ref_dir)[0]) == 30  # the latest revision draws
+    assert [l["name"] for l in list_layouts(ref_dir)] == ["L1"]  # revision files are not implicit layouts
 
 
 def test_invalid_names_and_bad_files_write_nothing(tmp_path: Path):
@@ -131,10 +139,49 @@ def test_implicit_file_is_listed_and_can_be_replaced_or_deleted(tmp_path: Path):
     with pytest.raises(LayoutError, match="already belong to layout '152-900530D'"):
         save_layout(ref_dir, name="other", products=["152-900530D"], filename="x.csv", payload=csv_bytes())
     removed = delete_layout(ref_dir, "152-900530D")
-    assert removed["file"] == "152-900530D.xlsx" and not (ref_dir / "152-900530D.xlsx").exists()
-    assert list_layouts(ref_dir) == [] and list_products(ref_dir) == []
+    # "delete" hides: the file stays so the layout can be brought back
+    assert removed["file"] == "152-900530D.xlsx" and (ref_dir / "152-900530D.xlsx").exists()
+    assert [(l["name"], l["hidden"]) for l in list_layouts(ref_dir)] == [("152-900530D", True)]
+    assert list_products(ref_dir) == [] and resolve_product("152-900530D", ref_dir) is None
     with pytest.raises(LayoutError, match="No layout named"):
         delete_layout(ref_dir, "152-900530D")
+    set_layout_hidden(ref_dir, "152-900530D", False)
+    assert list_products(ref_dir) == ["152-900530D"]
+
+
+def test_revisions_restore_and_names(tmp_path: Path):
+    ref_dir = tmp_path / "coordinates"
+    save_layout(ref_dir, name="L1", products=["P1"], product_groups=["G1"], filename="a.csv", payload=csv_bytes(), author="ann")
+    save_layout(ref_dir, name="L1", products=["P1"], product_groups=["G1"], filename="b.csv", payload=csv_bytes(dies=(1, 2, 3)), replace=True, author="bob", note="bad edit")
+    assert len(load_reference("P1", ref_dir)[0]) == 30
+    item = restore_revision(ref_dir, "L1", 1, author="ann")
+    assert item["revision"] == 3 and item["note"] == "Restored revision 1"
+    assert len(load_reference("P1", ref_dir)[0]) == 20
+    detail = get_layout(ref_dir, "L1")
+    assert [(r["rev"], r["action"], r["current"]) for r in detail["revisions"]] == [(3, "restore", True), (2, "upload", False), (1, "upload", False)]
+    assert detail["revisions"][0]["restored_from"] == 1
+    ref, _c, record = load_revision(ref_dir, "L1", 2)
+    assert len(ref) == 30 and record["author"] == "bob"
+    # product / group changes are revisions too
+    item = update_layout_names(ref_dir, "L1", products=["P1", "P2"], product_groups=["G2"], author="cy")
+    assert item["revision"] == 4 and item["products"] == ["P1", "P2"] and item["product_groups"] == ["G2"]
+    with pytest.raises(LayoutError, match="no revision 9"):
+        restore_revision(ref_dir, "L1", 9)
+
+
+def test_resolve_layout_product_first_then_group(tmp_path: Path):
+    ref_dir = tmp_path / "coordinates"
+    save_layout(ref_dir, name="BY-GROUP", products=["X1"], product_groups=["SEQUOIA I"], filename="a.csv", payload=csv_bytes())
+    save_layout(ref_dir, name="BY-PRODUCT", products=["159-501160A"], filename="b.csv", payload=csv_bytes(dies=(1, 2, 3)))
+    hit = resolve_layout("159-501160A", "SEQUOIA I", ref_dir)
+    assert hit["name"] == "BY-PRODUCT" and hit["matched_by"] == "product"
+    hit = resolve_layout("159-999999Z", "SEQUOIA I", ref_dir)
+    assert hit["name"] == "BY-GROUP" and hit["matched_by"] == "product_group" and hit["revision"] == 1
+    assert resolve_layout("159-999999Z", "OTHER", ref_dir) is None
+    with pytest.raises(LayoutError, match="Product group"):
+        save_layout(ref_dir, name="DUP", products=["Q"], product_groups=["SEQUOIA I"], filename="c.csv", payload=csv_bytes())
+    set_layout_hidden(ref_dir, "BY-GROUP", True)
+    assert resolve_layout("159-999999Z", "SEQUOIA I", ref_dir) is None
 
 
 def test_list_reports_unparseable_files(tmp_path: Path):

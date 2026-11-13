@@ -19,21 +19,23 @@ COLUMNS = [
 TINY = "TEST-PROD"
 
 
-def build_cloudpcs_xml(rows: list[dict[str, str]]) -> bytes:
+def build_cloudpcs_xml(rows: list[dict[str, str]], columns: list[str] | None = None, header: dict[str, str] | None = None) -> bytes:
     """Same structure as the customer export: HEADER doc + DATA doc with ColHeads / ColTypes / Rows array, one line."""
+    COLS = columns or COLUMNS
     def field(name: str, value: str) -> str:
         return f'<Field name="{name}"><String>{escape(value)}</String></Field>'
 
     head = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<Document xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="cloudPCSXmlDoc">'
-        '<Document name="HEADER">' + field("CONTROLJOBTYPE", "DATACOLLECT") + field("VERSION", "1.1") + '</Document>'
+        '<Document name="HEADER">' + field("CONTROLJOBTYPE", "DATACOLLECT") + field("VERSION", "1.1")
+        + "".join(field(k, v) for k, v in (header or {}).items()) + '</Document>'
         '<Document name="DATA">'
-        f'<Field name="ColHeads"><Array size="{len(COLUMNS)}" type="String">' + "".join(f"<String>{c}</String>" for c in COLUMNS) + '</Array></Field>'
-        f'<Field name="ColTypes"><Array size="{len(COLUMNS)}" type="String">' + "".join("<String>TEXT</String>" for _ in COLUMNS) + '</Array></Field>'
+        f'<Field name="ColHeads"><Array size="{len(COLS)}" type="String">' + "".join(f"<String>{c}</String>" for c in COLS) + '</Array></Field>'
+        f'<Field name="ColTypes"><Array size="{len(COLS)}" type="String">' + "".join("<String>TEXT</String>" for _ in COLS) + '</Array></Field>'
         f'<Field name="Rows"><Array size="{len(rows)}" type="Document">'
     )
-    body = "".join('<Document name="Rows">' + "".join(field(c, row.get(c, "")) for c in COLUMNS) + '</Document>' for row in rows)
+    body = "".join('<Document name="Rows">' + "".join(field(c, row.get(c, "")) for c in COLS) + '</Document>' for row in rows)
     tail = '</Array></Field></Document></Document>'
     return (head + body + tail).encode("utf-8")
 

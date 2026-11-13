@@ -16,3 +16,6 @@ if (!('createObjectURL' in URL)) {
   ;(URL as unknown as Record<string, unknown>).createObjectURL = () => 'blob:test'
   ;(URL as unknown as Record<string, unknown>).revokeObjectURL = () => {}
 }
+
+/* jsdom does not implement scrolling; App scrolls to the top on page changes. */
+window.scrollTo = (() => {}) as typeof window.scrollTo

@@ -44,8 +44,8 @@ describe('App bootstrap and header metrics', () => {
   it('shows the individual wafer view by default with the counts table and the uninspected row', async () => {
     await renderApp()
     expect(screen.getByTestId('individual-map')).toBeInTheDocument()
-    const last = reactCalls[reactCalls.length - 1]
-    expect(last.data.some((t) => t.name === 'Killer')).toBe(true)
+    // Plotly is driven from an effect: wait for the draw instead of assuming it already happened.
+    await waitFor(() => expect(reactCalls[reactCalls.length - 1]?.data.some((t) => t.name === 'Killer')).toBe(true))
     const counts = screen.getByTestId('status-counts')
     expect(within(counts).getByText('Killer').closest('tr')).toHaveTextContent('1')
     expect(within(counts).getByText(/Uninspected \(reference springs/).closest('tr')).toHaveTextContent('0')

@@ -11,24 +11,29 @@ interface Props {
 }
 
 const NAV: { route: Route; label: string }[] = [
-  { route: 'map', label: 'Wafer map' },
-  { route: 'layouts', label: 'Layouts' },
+  { route: 'map', label: 'Workbench' },
+  { route: 'layouts', label: 'Wafer Layout Editor' },
 ]
+
+/* The workbench link must drop a wafer page's "?sample=" query, otherwise it stays on the wafer page. */
+function navHref(route: Route): string {
+  return route === 'map' ? window.location.pathname + '#/' : ROUTE_HASH[route]
+}
 
 export function HeaderBar({ route, product, session, theme, onToggleTheme }: Props) {
   return (
     <header className="top-header">
       <div>
-        <h1 className="app-title">Spring Wafer Intelligence</h1>
+        <h1 className="app-title">Wafer Defect Map Intelligence</h1>
         <div className="app-subtitle">
           {route === 'layouts'
-            ? 'Layouts · product coordinate references for the wafer map'
+            ? 'Wafer Layout Editor · product coordinate references, with revisions'
             : 'Product-based coordinate registration · Individual inspection · Multi-wafer spatial signatures'}
         </div>
       </div>
       <nav className="nav-links" aria-label="Pages">
         {NAV.map((n) => (
-          <a key={n.route} href={ROUTE_HASH[n.route]} aria-current={route === n.route ? 'page' : undefined}>
+          <a key={n.route} href={navHref(n.route)} aria-current={route === n.route ? 'page' : undefined}>
             {n.label}
           </a>
         ))}

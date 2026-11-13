@@ -1,4 +1,4 @@
-"""Spring Wafer Intelligence - FastAPI service.
+"""Wafer Defect Map Intelligence - FastAPI service.
 
 Thin wrapper over ``engine/``: endpoints validate inputs, hold uploaded
 inspection data in in-memory sessions, call the engine and marshal its
@@ -14,6 +14,7 @@ import io
 import math
 import os
 import re
+import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ import pandas as pd
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -40,6 +42,16 @@ from engine import (
     combine_inspections,
     delete_layout,
     gang_bounds,
+    get_layout,
+    load_revision,
+    parse_reference,
+    place_export,
+    resolve_layout,
+    resolve_product,
+    restore_revision,
+    set_layout_hidden,
+    summarize_reference,
+    update_layout_names,
     gang_yield,
     header_metrics,
     individual_wafer_status,
@@ -58,6 +70,9 @@ from engine import (
 )
 from engine.gang_yield import GANG_YIELD_RULE, SCRAP_THRESHOLD
 from engine.reference import KIND_DIE, layout_kind
+from wafermap import PLANS, Locator, SourceError, WaferNotFound, load_settings, make_source
+from wafermap.filters import FilterError, FilterStore
+from wafermap.locator import matching_sample
 
 ROOT = Path(__file__).resolve().parent
 REF_DIR = Path(os.environ.get("REF_DIR", ROOT / "coordinates"))
@@ -96,7 +111,9 @@ CAVEATS = {
     "synthetic": "The bundled example wafers are explicitly simulated; do not interpret them as measured yield.",
 }
 
-app = FastAPI(title="Spring Wafer Intelligence", version="1.0.0")
+app = FastAPI(title="Wafer Defect Map Intelligence", version="1.0.0")
+# Map payloads are long numeric arrays (a 2D wafer is ~1 MB of JSON); they compress ~5-10x.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", DEFAULT_CORS).split(",") if o.strip()],
@@ -154,6 +171,11 @@ def _reference_or_422(product: str):
 
 
 # --------------------------------------------------------------------------- response models
+class Pitch(BaseModel):
+    x: float
+    y: float
+
+
 class ProductsResponse(BaseModel):
     products: list[str]
     examples_product: str
@@ -183,11 +205,6 @@ class ReferenceResponse(BaseModel):
     caveat: str
 
 
-class Pitch(BaseModel):
-    x: float
-    y: float
-
-
 class LayoutSummaryModel(BaseModel):
     springs: int
     gangs: int
@@ -211,12 +228,71 @@ class LayoutItem(BaseModel):
     name: str
     file: str
     products: list[str]
+    product_groups: list[str] = []
     implicit: bool
+    hidden: bool = False
     saved_at: str | None = None
     source_filename: str | None = None
+    revision: int = 1
+    revision_count: int = 1
+    author: str = ""
+    note: str = ""
     size_bytes: int
     summary: LayoutSummaryModel | None = None
     error: str | None = None
+
+
+class LayoutRevision(BaseModel):
+    rev: int
+    file: str
+    saved_at: str | None = None
+    author: str | None = None
+    note: str | None = None
+    source_filename: str | None = None
+    action: str | None = None
+    restored_from: int | None = None
+    products: list[str]
+    product_groups: list[str]
+    current: bool
+    available: bool
+
+
+class LayoutDetail(LayoutItem):
+    revisions: list[LayoutRevision]
+
+
+class LayoutGeometry(BaseModel):
+    name: str
+    rev: int
+    kind: str
+    pitch: Pitch | None = None
+    die: list[int]
+    spring: list[int]
+    x: list[float]
+    y: list[float]
+    source_x: list[float]
+    source_y: list[float]
+    gangs: list[GangBounds]
+    summary: LayoutSummaryModel
+    caveat: str
+
+
+class RestoreRequest(BaseModel):
+    rev: int
+    author: str | None = None
+    note: str | None = None
+
+
+class NamesRequest(BaseModel):
+    products: list[str] = []
+    product_groups: list[str] = []
+    author: str | None = None
+    note: str | None = None
+
+
+class HiddenRequest(BaseModel):
+    hidden: bool
+    author: str | None = None
 
 
 class LayoutsResponse(BaseModel):
@@ -555,7 +631,9 @@ def _build_analysis(session_id: str, session: Session, selected: list[str], band
 def _analysis(session_id: str, wafers: list[str] | None, bandwidth: float) -> dict:
     session = _session(session_id)
     selected = _select(session, wafers)
-    key = (tuple(selected), float(bandwidth))
+    # The layout file is part of the key: a new layout revision must not reuse an analysis of the old one.
+    layout_path = resolve_product(session.product, REF_DIR)
+    key = (tuple(selected), float(bandwidth), str(layout_path))
     with _LOCK:
         cached = session.analyses.get(key)
     if cached is not None:
@@ -678,34 +756,407 @@ async def layout_preview(file: Annotated[UploadFile, File()]) -> LayoutPreviewRe
     )
 
 
+def _split_names(value: str) -> list[str]:
+    return [p.strip() for p in re.split(r"[,\n;]", value or "") if p.strip()]
+
+
+def _layouts_changed() -> None:
+    _reference.cache_clear()
+    _layout_file.cache_clear()
+
+
 @app.post("/api/layouts", response_model=LayoutItem)
 async def layout_save(
     file: Annotated[UploadFile, File()],
     name: Annotated[str, Form()],
     products: Annotated[str, Form()] = "",
     replace: Annotated[bool, Form()] = False,
+    product_groups: Annotated[str, Form()] = "",
+    author: Annotated[str, Form()] = "",
+    note: Annotated[str, Form()] = "",
+    action: Annotated[str, Form()] = "upload",
 ) -> LayoutItem:
-    """Validate and store a layout; ``products`` is a comma / newline separated list of design names it serves."""
-    product_list = [p.strip() for p in re.split(r"[,\n;]", products) if p.strip()]
+    """Validate and store a layout or (``replace``) a new revision of it.
+
+    ``products`` / ``product_groups`` are comma / newline separated. ``action``
+    is ``upload`` (a file from disk) or ``edit`` (rows edited in the browser).
+    """
     try:
-        item = save_layout(REF_DIR, name=name, products=product_list, filename=file.filename or "layout", payload=await file.read(), replace=replace)
+        item = save_layout(
+            REF_DIR, name=name, products=_split_names(products), product_groups=_split_names(product_groups),
+            filename=file.filename or "layout", payload=await file.read(), replace=replace,
+            author=author, note=note, action=("edit" if action == "edit" else "upload"),
+        )
     except (LayoutError, ReferenceError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    _reference.cache_clear()
+    _layouts_changed()
+    return LayoutItem(**item)
+
+
+@app.get("/api/layouts/{name}", response_model=LayoutDetail)
+def layout_detail(name: str) -> LayoutDetail:
+    try:
+        return LayoutDetail(**get_layout(REF_DIR, name))
+    except LayoutError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/layouts/{name}/revisions/{rev}", response_model=LayoutGeometry)
+def layout_revision_geometry(name: str, rev: int) -> LayoutGeometry:
+    """Coordinates of one revision: what the preview draws and what the browser editor edits."""
+    try:
+        ref, center, record = load_revision(REF_DIR, name, rev)
+    except LayoutError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ReferenceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return LayoutGeometry(
+        name=name, rev=int(record["rev"]), **reference_payload(ref),
+        source_x=[float(v) for v in ref.X.tolist()], source_y=[float(v) for v in ref.Y.tolist()],
+        summary=LayoutSummaryModel(**summarize_reference(ref, center).__dict__), caveat=_center_caveat(*center),
+    )
+
+
+@app.post("/api/layouts/{name}/restore", response_model=LayoutItem)
+def layout_restore(name: str, request: RestoreRequest) -> LayoutItem:
+    """Roll back: a new revision copying revision ``rev``."""
+    try:
+        item = restore_revision(REF_DIR, name, request.rev, author=request.author, note=request.note)
+    except LayoutError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _layouts_changed()
+    return LayoutItem(**item)
+
+
+@app.post("/api/layouts/{name}/names", response_model=LayoutItem)
+def layout_names(name: str, request: NamesRequest) -> LayoutItem:
+    """A new revision with the same coordinates serving other products / groups."""
+    try:
+        item = update_layout_names(REF_DIR, name, products=request.products, product_groups=request.product_groups,
+                                   author=request.author, note=request.note)
+    except LayoutError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _layouts_changed()
+    return LayoutItem(**item)
+
+
+@app.post("/api/layouts/{name}/hidden", response_model=LayoutItem)
+def layout_hidden(name: str, request: HiddenRequest) -> LayoutItem:
+    """Hide (soft-delete) or bring back a layout; files and revisions are kept."""
+    try:
+        item = set_layout_hidden(REF_DIR, name, request.hidden, author=request.author)
+    except LayoutError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _layouts_changed()
     return LayoutItem(**item)
 
 
 @app.delete("/api/layouts/{name}", response_model=LayoutDeleteResponse)
 def layout_delete(name: str) -> LayoutDeleteResponse:
+    """Hides the layout (kept for compatibility); it can be brought back from the editor."""
     try:
         removed = delete_layout(REF_DIR, name)
     except LayoutError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    _reference.cache_clear()
+    _layouts_changed()
     return LayoutDeleteResponse(**removed)
 
 
-# Serve the built React frontend (single-origin, relative /api). Mounted after
+# --------------------------------------------------------------------------- wafer map (one sample, from the file share)
+# Wafer -> Die -> Feature. A feature is the unit inside a die (a spring on 2D wafers); 3D exports
+# have no feature level. The label is sent to the page so a layout can name its features later.
+FEATURE_LABEL = {"singular": "Feature", "plural": "Features"}
+DIE_YIELD_RULE = (
+    "Scrap when bad features / total features in the die > 60%. Incomplete inspections are flagged; "
+    "observed bad counts can already establish scrap."
+)
+WAFERMAP_CAVEAT = (
+    "Exploratory view of one inspection export. Die / feature positions come from the matched layout "
+    "(latest revision); the coordinate center is the layout's bounding-box midpoint and notch-down is assumed."
+)
+_LOCATOR: Locator | None = None
+_LOCATOR_LOCK = Lock()
+
+
+def _locator() -> Locator:
+    global _LOCATOR
+    with _LOCATOR_LOCK:
+        if _LOCATOR is None:
+            settings = load_settings()
+            try:
+                _LOCATOR = Locator(settings, make_source(settings))
+            except SourceError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _LOCATOR
+
+
+@lru_cache(maxsize=16)
+def _layout_file(path: str):
+    """Parsed layout per revision file (revision files never change)."""
+    return parse_reference(path)
+
+
+def _export_palette(frame: pd.DataFrame) -> tuple[list[str], dict[str, str]]:
+    counts = frame.Status[frame.Status.ne("Good")].value_counts()
+    codes = [str(c) for c in counts.index]
+    colors = {"Good": COLORS["Good"], UNINSPECTED: COLORS[UNINSPECTED]}
+    for i, code in enumerate(codes):
+        colors[code] = DEFECT_CODE_PALETTE[i % len(DEFECT_CODE_PALETTE)]
+    return ["Good", *codes, UNINSPECTED], colors
+
+
+def _wafer_summary(export, frame: pd.DataFrame) -> dict:
+    """Unit counts over the export itself (no layout needed). Farm dies are reported apart from yield."""
+    farm = set(export.farm_dies)
+    product_units = frame[~frame.Die_Num.isin(farm)] if farm else frame
+    good = int(product_units.Status.eq("Good").sum())
+    total = int(len(product_units))
+    farm_rows = frame[frame.Die_Num.isin(farm)]
+    return {
+        "unit": "die" if export.level == "die" else "feature",
+        "total": total, "good": good, "bad": total - good, "yield_pct": (100.0 * good / total) if total else None,
+        "farm_dies": len(farm), "farm_good": int(farm_rows.Status.eq("Good").sum()),
+        "dies": int(frame.Die_Num.nunique()),
+    }
+
+
+def _status_stages(frame: pd.DataFrame) -> dict[str, list[dict[str, Any]]]:
+    """Per status: its stages with counts, largest first (stage None = not recorded).
+    Defect codes list their scrap stages; Good lists its banked stages (PROCESS)."""
+    if "Stage" not in frame.columns or frame.empty:
+        return {}
+    grouped = frame.assign(Stage=frame.Stage.where(frame.Stage.notna(), "")).groupby(["Status", "Stage"]).size()
+    out: dict[str, list[dict[str, Any]]] = {}
+    for (code, stage), n in grouped.sort_values(ascending=False).items():
+        out.setdefault(str(code), []).append({"stage": stage or None, "count": int(n)})
+    return out
+
+
+def _stage_index(ref: pd.DataFrame, frame: pd.DataFrame) -> tuple[list[str], list[int]]:
+    """Distinct stage names (most frequent first) and, per layout position, the index of its
+    stage (-1 = none: uninspected or not recorded). Same order as ``status_codes``."""
+    if "Stage" not in frame.columns:
+        return [], [-1] * len(ref)
+    names = [str(s) for s in frame.Stage.dropna().value_counts().index]
+    lookup = {s: i for i, s in enumerate(names)}
+    merged = ref[["Die_Num", "Spring_Num"]].merge(frame[["Die_Num", "Spring_Num", "Stage"]], on=["Die_Num", "Spring_Num"], how="left")
+    return names, [lookup.get(s, -1) if isinstance(s, str) else -1 for s in merged.Stage.tolist()]
+
+
+@app.get("/api/wafermap")
+def wafermap(sample: str, plan: str | None = None) -> dict:
+    """Everything the Wafer Map page needs for one sample (the dashboards' wafer-map icon).
+
+    Finds the newest iXML for ``sample`` (``plan`` = ``2d`` / ``3d``, or both)
+    by walking day folders back from today, parses it, and matches a layout by
+    ``PRODUCT`` then ``PRODUCTGROUP``. ``status`` is ``ok``, ``no_layout`` or
+    ``layout_mismatch``; the last two still return the export facts so the page
+    can say which layout is missing and open the editor for it.
+    """
+    sample = (sample or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", sample):
+        raise HTTPException(status_code=422, detail="A sample id such as W305762.1 is required.")
+    plan_key = (plan or "").strip().lower() or None
+    if plan_key is not None and plan_key not in PLANS:
+        raise HTTPException(status_code=422, detail=f"plan must be one of {sorted(PLANS)} (got {plan!r}).")
+    locator = _locator()
+    try:
+        located, export = locator.locate_and_load(sample, plan_key)
+    except WaferNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SourceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except CloudPcsAdapterError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    wafer_id = matching_sample(sample, export.sample_ids) or export.sample_ids[0]
+    frame = export.frame[export.frame.Wafer_ID == wafer_id]
+    states, colors = _export_palette(frame)
+    counts = frame.Status.value_counts()
+    body: dict[str, Any] = {
+        "sample_id": wafer_id,
+        "plan": located.plan,
+        "status": "ok",
+        "message": None,
+        "file": located.to_json(),
+        "source": load_settings().describe(),
+        "product": export.product,
+        "product_group": export.product_group,
+        "level": "die" if export.level == "die" else "feature",
+        "feature_label": FEATURE_LABEL,
+        "transaction_id": export.header.get("TRANSACTIONID"),
+        "farm_dies": export.farm_dies,
+        "summary": _wafer_summary(export, frame),
+        "status_counts": [{"status": s, "count": int(counts.get(s, 0))} for s in states if s != UNINSPECTED and counts.get(s, 0) > 0],
+        "status_stages": _status_stages(frame),
+        "states": states,
+        "colors": colors,
+        "layout": None,
+        "map": None,
+        "caveat": WAFERMAP_CAVEAT,
+    }
+    match = resolve_layout(export.product, export.product_group, REF_DIR)
+    if match is None:
+        body["status"] = "no_layout"
+        body["message"] = (
+            f"No layout is saved for product {export.product}"
+            + (f" or product group {export.product_group}" if export.product_group else "")
+            + ". Add one in the Wafer Layout Editor."
+        )
+        return body
+    try:
+        ref, center = _layout_file(str(match["path"]))
+    except ReferenceError as exc:
+        body.update(status="layout_mismatch", message=f"Layout {match['name']!r} cannot be read: {exc}")
+        body["layout"] = {"name": match["name"], "revision": match["revision"], "matched_by": match["matched_by"], "kind": None}
+        return body
+    body["layout"] = {"name": match["name"], "revision": match["revision"], "matched_by": match["matched_by"], "kind": layout_kind(ref)}
+    try:
+        place_export(export, ref, match["name"])
+    except (CloudPcsAdapterError, InspectionError) as exc:
+        body.update(status="layout_mismatch", message=str(exc))
+        return body
+
+    status, _counts = individual_wafer_status(ref, frame, wafer_id)
+    index = {s: i for i, s in enumerate(states)}
+    codes = [index[s] for s in status.tolist()]
+    stage_names, stage_codes = _stage_index(ref, frame)
+    gangs = gang_yield(ref, frame) if export.level == "spring" else None
+    body["map"] = {
+        **reference_payload(ref),
+        "center": {"x": float(center[0]), "y": float(center[1])},
+        "status_codes": codes,
+        "stages": stage_names,
+        "stage_codes": stage_codes,
+        "uninspected": int(sum(1 for c in codes if c == index[UNINSPECTED])),
+        "die_yield": None if gangs is None else {
+            "rows": [{"die": int(r.Die_Num), "inspected": int(r.Inspected), "bad": int(r.Bad), "total_springs": int(r.Total_Springs),
+                      "bad_pct": float(r.Bad_Pct), "complete": bool(r.Complete_Inspection), "disposition": str(r.Disposition)}
+                     for r in gangs.itertuples()],
+            "scrapped": int((gangs.Disposition == "SCRAP").sum()), "total": int(len(gangs)),
+            "threshold": SCRAP_THRESHOLD, "rule": DIE_YIELD_RULE,
+        },
+        "caveat": _center_caveat(*center),
+    }
+    return body
+
+
+# --------------------------------------------------------------------------- map filters (shared library)
+class MapFilterSave(BaseModel):
+    name: str | None = None
+    definition: dict[str, Any]
+    author: str | None = None
+    note: str | None = None
+
+
+class MapFilterCopy(BaseModel):
+    name: str
+    author: str | None = None
+
+
+class MapFilterRestore(BaseModel):
+    rev: int
+    author: str | None = None
+
+
+def _filter_store() -> FilterStore:
+    return FilterStore(REF_DIR)
+
+
+def _filter_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except FilterError as exc:
+        status = 404 if str(exc).startswith("No map filter") else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/api/map-filters")
+def map_filters() -> dict:
+    """Every saved map filter (hidden ones flagged) with its current definition."""
+    return {"filters": _filter_store().list()}
+
+
+@app.get("/api/map-filters/{filter_id}")
+def map_filter(filter_id: str) -> dict:
+    """One filter with its full revision history (newest first)."""
+    return _filter_call(_filter_store().get, filter_id)
+
+
+@app.post("/api/map-filters")
+def map_filter_create(request: MapFilterSave) -> dict:
+    return _filter_call(_filter_store().create, name=request.name or "", definition=request.definition,
+                        author=request.author or "", note=request.note or "")
+
+
+@app.put("/api/map-filters/{filter_id}")
+def map_filter_save(filter_id: str, request: MapFilterSave) -> dict:
+    """A new revision (optionally renamed)."""
+    return _filter_call(_filter_store().save_revision, filter_id, name=request.name, definition=request.definition,
+                        author=request.author or "", note=request.note or "")
+
+
+@app.post("/api/map-filters/{filter_id}/copy")
+def map_filter_copy(filter_id: str, request: MapFilterCopy) -> dict:
+    return _filter_call(_filter_store().copy, filter_id, name=request.name, author=request.author or "")
+
+
+@app.post("/api/map-filters/{filter_id}/restore")
+def map_filter_restore(filter_id: str, request: MapFilterRestore) -> dict:
+    return _filter_call(_filter_store().restore, filter_id, request.rev, author=request.author or "")
+
+
+@app.post("/api/map-filters/{filter_id}/hidden")
+def map_filter_hidden(filter_id: str, request: HiddenRequest) -> dict:
+    return _filter_call(_filter_store().set_hidden, filter_id, request.hidden, author=request.author or "")
+
+
+@app.get("/api/wafermap/config")
+def wafermap_config() -> dict:
+    """Where the page looks for files (never the SAS token) and the known plans."""
+    return {**load_settings().describe(), "plans": {k: v for k, v in PLANS.items()}}
+
+
+@app.on_event("startup")
+def _prewarm_listings() -> None:
+    days = load_settings().prewarm_days
+    if days:
+        def run() -> None:
+            try:
+                _locator().prewarm(days)
+            except Exception:  # noqa: BLE001 - warm-up is best effort
+                pass
+        threading.Thread(target=run, name="wafermap-prewarm", daemon=True).start()
+
+
+class StripBasePath:
+    """IIS hosts this app as a sub-application (e.g. ``/wafermap``) and HttpPlatformHandler
+    forwards the full path. ``APP_BASE_PATH`` names that prefix; it is removed here so the
+    routes stay ``/api/...`` and ``/``, and recorded as ``root_path``."""
+
+    def __init__(self, inner, prefix: str):
+        self.inner = inner
+        self.prefix = "/" + prefix.strip("/") if prefix.strip("/") else ""
+
+    async def __call__(self, scope, receive, send):
+        if self.prefix and scope["type"] in ("http", "websocket"):
+            path = scope.get("path", "")
+            if path == self.prefix and scope["type"] == "http":
+                # "/wafermap?sample=.." -> "/wafermap/?sample=..": relative "api/" and "./assets" need the slash.
+                query = scope.get("query_string", b"").decode("latin-1")
+                location = self.prefix + "/" + (f"?{query}" if query else "")
+                await send({"type": "http.response.start", "status": 308, "headers": [(b"location", location.encode("latin-1"))]})
+                await send({"type": "http.response.body", "body": b""})
+                return
+            if path.startswith(self.prefix + "/"):
+                scope = dict(scope, path=path[len(self.prefix):] or "/", root_path=scope.get("root_path", "") + self.prefix)
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(StripBasePath, prefix=os.environ.get("APP_BASE_PATH", ""))
+
+
+# Serve the built React frontend (single-origin, relative api/). Mounted after
 # the API routes; skipped when no build exists (backend-only test runs).
 _STATIC_DIR = Path(os.environ.get("STATIC_DIR", DEFAULT_STATIC_DIR))
 if _STATIC_DIR.is_dir():

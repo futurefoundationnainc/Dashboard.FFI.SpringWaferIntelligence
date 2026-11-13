@@ -3,15 +3,27 @@ import type {
   AnalyzeRequest,
   FileError,
   InspectionsResponse,
+  LayoutDetail,
+  LayoutGeometry,
   LayoutItem,
   LayoutPreview,
   LayoutSaveRequest,
   LayoutsResponse,
   ProductsResponse,
   Reference,
+  SavedMapFilter,
+  SavedMapFilterDetail,
+  FilterDefinition,
+  WaferMap,
 } from './types'
 
-const BASE = '/api'
+/* Relative to the page, so the same build works at "/" (dev, Docker) and as an
+   IIS sub-application such as "/wafermap/" (where "/api" is another app). */
+export function apiBase(href: string = window.location.href): string {
+  return new URL('api', href.split('#')[0]).pathname
+}
+
+const BASE = apiBase()
 
 /* Upload validation failures carry one message per file (the reference app
    surfaced every error and stopped); keep them separate from generic errors. */
@@ -48,6 +60,12 @@ async function parseJson<T>(res: Response): Promise<T> {
     throw new Error(message)
   }
   return res.json() as Promise<T>
+}
+
+function postJson<T>(url: string, body: unknown): Promise<T> {
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) =>
+    parseJson<T>(r),
+  )
 }
 
 export function exportUrl(kind: 'stacked' | 'inspection', sessionId: string, wafers: string[]): string {
@@ -98,7 +116,71 @@ export const api = {
     form.append('name', request.name)
     form.append('products', request.products)
     form.append('replace', String(request.replace))
+    if (request.productGroups !== undefined) form.append('product_groups', request.productGroups)
+    if (request.author) form.append('author', request.author)
+    if (request.note) form.append('note', request.note)
+    if (request.action) form.append('action', request.action)
     return fetch(`${BASE}/layouts`, { method: 'POST', body: form }).then((r) => parseJson<LayoutItem>(r))
+  },
+
+  layout(name: string): Promise<LayoutDetail> {
+    return fetch(`${BASE}/layouts/${encodeURIComponent(name)}`).then((r) => parseJson<LayoutDetail>(r))
+  },
+
+  layoutRevision(name: string, rev: number): Promise<LayoutGeometry> {
+    return fetch(`${BASE}/layouts/${encodeURIComponent(name)}/revisions/${rev}`).then((r) => parseJson<LayoutGeometry>(r))
+  },
+
+  restoreLayout(name: string, rev: number, author: string, note = ''): Promise<LayoutItem> {
+    return postJson<LayoutItem>(`${BASE}/layouts/${encodeURIComponent(name)}/restore`, { rev, author, note })
+  },
+
+  updateLayoutNames(name: string, products: string[], productGroups: string[], author: string, note = ''): Promise<LayoutItem> {
+    return postJson<LayoutItem>(`${BASE}/layouts/${encodeURIComponent(name)}/names`, {
+      products, product_groups: productGroups, author, note,
+    })
+  },
+
+  setLayoutHidden(name: string, hidden: boolean, author: string): Promise<LayoutItem> {
+    return postJson<LayoutItem>(`${BASE}/layouts/${encodeURIComponent(name)}/hidden`, { hidden, author })
+  },
+
+  mapFilters(): Promise<{ filters: SavedMapFilter[] }> {
+    return fetch(`${BASE}/map-filters`).then((r) => parseJson<{ filters: SavedMapFilter[] }>(r))
+  },
+
+  mapFilter(id: string): Promise<SavedMapFilterDetail> {
+    return fetch(`${BASE}/map-filters/${encodeURIComponent(id)}`).then((r) => parseJson<SavedMapFilterDetail>(r))
+  },
+
+  createMapFilter(name: string, definition: FilterDefinition, author: string, note = ''): Promise<SavedMapFilter> {
+    return postJson<SavedMapFilter>(`${BASE}/map-filters`, { name, definition, author, note })
+  },
+
+  saveMapFilter(id: string, name: string, definition: FilterDefinition, author: string, note = ''): Promise<SavedMapFilter> {
+    return fetch(`${BASE}/map-filters/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, definition, author, note }),
+    }).then((r) => parseJson<SavedMapFilter>(r))
+  },
+
+  copyMapFilter(id: string, name: string, author: string): Promise<SavedMapFilter> {
+    return postJson<SavedMapFilter>(`${BASE}/map-filters/${encodeURIComponent(id)}/copy`, { name, author })
+  },
+
+  restoreMapFilter(id: string, rev: number, author: string): Promise<SavedMapFilter> {
+    return postJson<SavedMapFilter>(`${BASE}/map-filters/${encodeURIComponent(id)}/restore`, { rev, author })
+  },
+
+  setMapFilterHidden(id: string, hidden: boolean, author: string): Promise<SavedMapFilter> {
+    return postJson<SavedMapFilter>(`${BASE}/map-filters/${encodeURIComponent(id)}/hidden`, { hidden, author })
+  },
+
+  waferMap(sample: string, plan: string | null): Promise<WaferMap> {
+    const params = new URLSearchParams({ sample })
+    if (plan) params.set('plan', plan)
+    return fetch(`${BASE}/wafermap?${params.toString()}`).then((r) => parseJson<WaferMap>(r))
   },
 
   deleteLayout(name: string): Promise<{ name: string; file: string; products: string[] }> {

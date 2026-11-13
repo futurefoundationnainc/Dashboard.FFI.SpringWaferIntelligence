@@ -317,8 +317,8 @@ def test_layouts_list_preview_save_delete(layout_dir):
     assert client.get("/api/reference/152-900777Z").json()["gang_count"] == 3  # cache invalidated
     assert client.get("/api/reference/152-900777Y").status_code == 422  # alias removed by the replace
 
-    res = client.delete("/api/layouts/LAYOUT-Z")
-    assert res.status_code == 200 and res.json()["file"] == "LAYOUT-Z.csv"
+    res = client.delete("/api/layouts/LAYOUT-Z")  # hides; revision 2 (3 dies) was current
+    assert res.status_code == 200 and res.json()["file"] == "LAYOUT-Z.r002.csv"
     assert client.get("/api/products").json()["products"] == ["152-900530D"]
     assert client.delete("/api/layouts/LAYOUT-Z").status_code == 404
 

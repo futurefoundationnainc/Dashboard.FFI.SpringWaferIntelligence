@@ -1,4 +1,4 @@
-"""Launch Spring Wafer Intelligence (API + built frontend) in the default browser."""
+"""Launch Wafer Defect Map Intelligence (API + built frontend) in the default browser."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def main() -> None:
     preferred = int(os.environ.get("SPRING_WAFER_PORT", "8090"))
     port = choose_port(preferred)
     url = f"http://127.0.0.1:{port}"
-    print(f"\nSpring Wafer Intelligence: {url}")
+    print(f"\nWafer Defect Map Intelligence: {url}")
     print("Press Ctrl+C in this window to stop the application.\n")
     threading.Timer(1.2, lambda: webbrowser.open(url, new=2)).start()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
