@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "serve:local": "node ../deploy/serve-local.mjs"
   },
   "dependencies": {
     "plotly.js-dist-min": "^2.35.2",

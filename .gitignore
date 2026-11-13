@@ -30,3 +30,9 @@ backend/examples/iXML#*.xml
 
 # Local test data for the Wafer Map (layouts + share cache): never committed
 /data/
+
+# Server settings (DataDir, file-share SAS = SECRET); see backend/appsettings.example.json
+backend/appsettings.json
+
+# Deployment packages built on this PC to copy to the VM (dist.<commit>, api.<commit>, seed)
+/dist/
